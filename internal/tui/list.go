@@ -40,7 +40,11 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	meta := mutedStyle.Render(fmt.Sprintf(" %d albums", ai.albumCount))
+	noun := "albums"
+	if ai.albumCount == 1 {
+		noun = "album"
+	}
+	meta := mutedStyle.Render(fmt.Sprintf(" %d %s", ai.albumCount, noun))
 	newest := ""
 	if ai.newestAlbum != "" && m.Width() > 60 {
 		newest = subtleStyle.Render(" · " + ai.newestAlbum)

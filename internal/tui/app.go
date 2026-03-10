@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/scan"
 	"github.com/toba/musup/internal/state"
 )
@@ -20,6 +21,7 @@ const (
 
 type Model struct {
 	db     *state.DB
+	mb     *musicbrainz.Client
 	root   string
 	state  viewState
 	width  int
@@ -33,8 +35,10 @@ type Model struct {
 }
 
 func New(db *state.DB, root string) Model {
+	mb := musicbrainz.New("musup", "0.1.0", "https://github.com/toba/musup")
 	return Model{
 		db:         db,
+		mb:         mb,
 		root:       root,
 		state:      viewScanning,
 		scanStatus: "Scanning music files...",
@@ -95,7 +99,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg := msg.(type) {
 		case showDetailMsg:
 			detail := msg
-			m.detail = newDetailModel(m.db, detail.artist)
+			m.detail = newDetailModel(m.db, m.mb, detail.artist)
 			m.detail.height = m.height
 			m.state = viewDetail
 			return m, nil

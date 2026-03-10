@@ -10,6 +10,8 @@ var (
 	colorAccent = lipgloss.Color("#E040FB")
 	colorMuted  = lipgloss.Color("#9CA3AF")
 	colorSubtle = lipgloss.Color("#555555")
+	colorError  = lipgloss.Color("#FF5555")
+	colorLocal  = lipgloss.Color("#50FA7B")
 
 	titleStyle = lipgloss.NewStyle().
 			Foreground(colorAccent).
@@ -23,6 +25,12 @@ var (
 
 	cursorStyle = lipgloss.NewStyle().
 			Foreground(colorAccent)
+
+	errorStyle = lipgloss.NewStyle().
+			Foreground(colorError)
+
+	localStyle = lipgloss.NewStyle().
+			Foreground(colorLocal)
 )
 
 // placeOverlay centers fg on top of bg, dimming the background.

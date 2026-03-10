@@ -58,3 +58,43 @@ type ArtistCredit struct {
 	Artist     Artist `json:"artist"`
 	JoinPhrase string `json:"joinphrase"`
 }
+
+// ReleaseBrowseResult is the response from /release?release-group=...
+type ReleaseBrowseResult struct {
+	Count    int       `json:"release-count"`
+	Offset   int       `json:"release-offset"`
+	Releases []Release `json:"releases"`
+}
+
+// Release is a specific edition of a release group.
+type Release struct {
+	ID    string   `json:"id"`
+	Title string   `json:"title"`
+	Date  string   `json:"date"`
+	Media []Medium `json:"media"`
+}
+
+// Medium is a disc or other physical medium within a release.
+type Medium struct {
+	Position   int     `json:"position"`
+	Format     string  `json:"format"`
+	TrackCount int     `json:"track-count"`
+	Tracks     []Track `json:"tracks"`
+}
+
+// Track is a single track on a medium.
+type Track struct {
+	ID        string    `json:"id"`
+	Number    string    `json:"number"`
+	Title     string    `json:"title"`
+	Length    int       `json:"length"`
+	Position  int       `json:"position"`
+	Recording Recording `json:"recording"`
+}
+
+// Recording is the underlying recording for a track.
+type Recording struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Length int    `json:"length"`
+}

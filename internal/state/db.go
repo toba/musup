@@ -15,7 +15,30 @@ type FileRecord struct {
 	ModTime   time.Time
 	Artist    string
 	Album     string
+	Title     string
 	ScannedAt time.Time
+}
+
+// AlbumRecord represents an album in the catalog (from MusicBrainz or local).
+type AlbumRecord struct {
+	ArtistName  string
+	Title       string
+	MBID        string
+	ReleaseDate string
+	PrimaryType string
+	LocalTracks int
+	TotalTracks int
+}
+
+// TrackRecord represents a track in an album.
+type TrackRecord struct {
+	ArtistName string
+	AlbumTitle string
+	Title      string
+	Position   int
+	MBID       string
+	LengthMS   int
+	Local      bool
 }
 
 // ArtistRecord represents a tracked artist.
@@ -25,6 +48,7 @@ type ArtistRecord struct {
 	LastCheckedAt time.Time
 	LatestRelease string
 	LatestDate    string
+	NotFound      bool
 }
 
 // DB wraps a SQLite database for musup state.
@@ -70,7 +94,28 @@ func (d *DB) migrate() error {
 		mod_time    TEXT NOT NULL,
 		artist      TEXT NOT NULL,
 		album       TEXT NOT NULL DEFAULT '',
+		title       TEXT NOT NULL DEFAULT '',
 		scanned_at  TEXT NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS albums (
+		artist_name  TEXT NOT NULL,
+		title        TEXT NOT NULL,
+		mbid         TEXT NOT NULL DEFAULT '',
+		release_date TEXT NOT NULL DEFAULT '',
+		primary_type TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (artist_name, title)
+	);
+
+	CREATE TABLE IF NOT EXISTS tracks (
+		artist_name  TEXT NOT NULL,
+		album_title  TEXT NOT NULL,
+		title        TEXT NOT NULL,
+		position     INTEGER NOT NULL DEFAULT 0,
+		mbid         TEXT NOT NULL DEFAULT '',
+		length_ms    INTEGER NOT NULL DEFAULT 0,
+		local        INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (artist_name, album_title, title)
 	);
 
 	CREATE TABLE IF NOT EXISTS artists (
@@ -78,28 +123,95 @@ func (d *DB) migrate() error {
 		mbid             TEXT NOT NULL DEFAULT '',
 		last_checked_at  TEXT NOT NULL DEFAULT '',
 		latest_release   TEXT NOT NULL DEFAULT '',
-		latest_date      TEXT NOT NULL DEFAULT ''
+		latest_date      TEXT NOT NULL DEFAULT '',
+		not_found        INTEGER NOT NULL DEFAULT 0
 	);
 	`
-	_, err := d.db.Exec(schema)
+	if _, err := d.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// Migration: add not_found column if missing.
+	if err := d.addColumnIfMissing("artists", "not_found", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
+	// Migration: add title column to files if missing.
+	if err := d.addColumnIfMissing("files", "title", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	// Migration: drop local column from albums if present.
+	if err := d.dropAlbumsLocalColumn(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *DB) addColumnIfMissing(table, column, colDef string) error {
+	var count int
+	err := d.db.QueryRow(
+		fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column),
+	).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *DB) dropAlbumsLocalColumn() error {
+	var count int
+	err := d.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'local'",
+	).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	// Recreate table without local column.
+	const migration = `
+	CREATE TABLE albums_new (
+		artist_name  TEXT NOT NULL,
+		title        TEXT NOT NULL,
+		mbid         TEXT NOT NULL DEFAULT '',
+		release_date TEXT NOT NULL DEFAULT '',
+		primary_type TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (artist_name, title)
+	);
+	INSERT INTO albums_new (artist_name, title, mbid, release_date, primary_type)
+		SELECT artist_name, title, mbid, release_date, primary_type FROM albums;
+	DROP TABLE albums;
+	ALTER TABLE albums_new RENAME TO albums;
+	`
+	_, err = d.db.Exec(migration)
 	return err
 }
 
 // UpsertFile inserts or updates a file record.
 func (d *DB) UpsertFile(f FileRecord) error {
 	const q = `
-	INSERT INTO files (path, size, mod_time, artist, album, scanned_at)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, mod_time, artist, album, title, scanned_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
 		size       = excluded.size,
 		mod_time   = excluded.mod_time,
 		artist     = excluded.artist,
 		album      = excluded.album,
+		title      = excluded.title,
 		scanned_at = excluded.scanned_at
 	`
 	_, err := d.db.Exec(q,
 		f.Path, f.Size, f.ModTime.Format(time.RFC3339),
-		f.Artist, f.Album, f.ScannedAt.Format(time.RFC3339),
+		f.Artist, f.Album, f.Title, f.ScannedAt.Format(time.RFC3339),
 	)
 	return err
 }
@@ -203,17 +315,22 @@ func (d *DB) LocalAlbums(artist string) ([]string, error) {
 // UpsertArtist inserts or updates an artist record.
 func (d *DB) UpsertArtist(a ArtistRecord) error {
 	const q = `
-	INSERT INTO artists (name, mbid, last_checked_at, latest_release, latest_date)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO artists (name, mbid, last_checked_at, latest_release, latest_date, not_found)
+	VALUES (?, ?, ?, ?, ?, ?)
 	ON CONFLICT(name) DO UPDATE SET
 		mbid             = excluded.mbid,
 		last_checked_at  = excluded.last_checked_at,
 		latest_release   = excluded.latest_release,
-		latest_date      = excluded.latest_date
+		latest_date      = excluded.latest_date,
+		not_found        = excluded.not_found
 	`
+	notFound := 0
+	if a.NotFound {
+		notFound = 1
+	}
 	_, err := d.db.Exec(q,
 		a.Name, a.MBID, a.LastCheckedAt.Format(time.RFC3339),
-		a.LatestRelease, a.LatestDate,
+		a.LatestRelease, a.LatestDate, notFound,
 	)
 	return err
 }
@@ -222,10 +339,11 @@ func (d *DB) UpsertArtist(a ArtistRecord) error {
 func (d *DB) Artist(name string) (*ArtistRecord, error) {
 	var a ArtistRecord
 	var lastChecked string
+	var notFound int
 	err := d.db.QueryRow(
-		"SELECT name, mbid, last_checked_at, latest_release, latest_date FROM artists WHERE name = ?",
+		"SELECT name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name = ?",
 		name,
-	).Scan(&a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate)
+	).Scan(&a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate, &notFound)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -235,7 +353,133 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 	if lastChecked != "" {
 		a.LastCheckedAt, _ = time.Parse(time.RFC3339, lastChecked)
 	}
+	a.NotFound = notFound != 0
 	return &a, nil
+}
+
+// MarkArtistNotFound upserts an artist with not_found = 1.
+func (d *DB) MarkArtistNotFound(name string) error {
+	const q = `
+	INSERT INTO artists (name, not_found)
+	VALUES (?, 1)
+	ON CONFLICT(name) DO UPDATE SET
+		not_found = 1
+	`
+	_, err := d.db.Exec(q, name)
+	return err
+}
+
+// UpsertAlbum inserts or updates an album record.
+func (d *DB) UpsertAlbum(a AlbumRecord) error {
+	const q = `
+	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type)
+	VALUES (?, ?, ?, ?, ?)
+	ON CONFLICT(artist_name, title) DO UPDATE SET
+		mbid         = excluded.mbid,
+		release_date = excluded.release_date,
+		primary_type = excluded.primary_type
+	`
+	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType)
+	return err
+}
+
+// Albums returns all albums for an artist with computed track counts,
+// ordered by release_date DESC.
+func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
+	const q = `
+	SELECT a.artist_name, a.title, a.mbid, a.release_date, a.primary_type,
+	       COALESCE(t.total, 0), COALESCE(t.local, 0)
+	FROM albums a
+	LEFT JOIN (
+		SELECT artist_name, album_title,
+		       COUNT(*) AS total,
+		       SUM(local) AS local
+		FROM tracks
+		GROUP BY artist_name, album_title
+	) t ON t.artist_name = a.artist_name AND t.album_title = a.title
+	WHERE a.artist_name = ?
+	ORDER BY a.release_date DESC, a.title ASC
+	`
+	rows, err := d.db.Query(q, artistName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var albums []AlbumRecord
+	for rows.Next() {
+		var a AlbumRecord
+		if err := rows.Scan(&a.ArtistName, &a.Title, &a.MBID, &a.ReleaseDate, &a.PrimaryType,
+			&a.TotalTracks, &a.LocalTracks); err != nil {
+			return nil, err
+		}
+		albums = append(albums, a)
+	}
+	return albums, rows.Err()
+}
+
+// UpsertTrack inserts or updates a track record.
+func (d *DB) UpsertTrack(t TrackRecord) error {
+	local := 0
+	if t.Local {
+		local = 1
+	}
+	const q = `
+	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(artist_name, album_title, title) DO UPDATE SET
+		position  = excluded.position,
+		mbid      = excluded.mbid,
+		length_ms = excluded.length_ms,
+		local     = excluded.local
+	`
+	_, err := d.db.Exec(q, t.ArtistName, t.AlbumTitle, t.Title, t.Position, t.MBID, t.LengthMS, local)
+	return err
+}
+
+// Tracks returns all tracks for an album, ordered by position.
+func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
+	const q = `
+	SELECT artist_name, album_title, title, position, mbid, length_ms, local
+	FROM tracks
+	WHERE artist_name = ? AND album_title = ?
+	ORDER BY position ASC
+	`
+	rows, err := d.db.Query(q, artistName, albumTitle)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var tracks []TrackRecord
+	for rows.Next() {
+		var t TrackRecord
+		var local int
+		if err := rows.Scan(&t.ArtistName, &t.AlbumTitle, &t.Title, &t.Position, &t.MBID, &t.LengthMS, &local); err != nil {
+			return nil, err
+		}
+		t.Local = local != 0
+		tracks = append(tracks, t)
+	}
+	return tracks, rows.Err()
+}
+
+// MarkLocalTracks cross-references the files table to set local flag on tracks
+// matching by artist, album, and title.
+func (d *DB) MarkLocalTracks(artistName string) error {
+	const q = `
+	UPDATE tracks SET local = (
+		EXISTS (
+			SELECT 1 FROM files
+			WHERE files.artist = tracks.artist_name
+			  AND files.album  = tracks.album_title
+			  AND files.title  = tracks.title
+		)
+	)
+	WHERE artist_name = ?
+	`
+	_, err := d.db.Exec(q, artistName)
+	return err
 }
 
 // RemoveStaleFiles deletes file records whose paths are not in livePaths.

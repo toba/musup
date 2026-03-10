@@ -56,7 +56,7 @@ func (c *Client) SearchArtists(ctx context.Context, name string, limit, offset i
 
 // BrowseReleaseGroups returns release groups for an artist MBID.
 // Use typeFilter to restrict results (e.g. "album", "ep", "single") or "" for all.
-func (c *Client) BrowseReleaseGroups(ctx context.Context, artistMBID string, typeFilter string, limit, offset int) (*ReleaseGroupBrowseResult, error) {
+func (c *Client) BrowseReleaseGroups(ctx context.Context, artistMBID, typeFilter string, limit, offset int) (*ReleaseGroupBrowseResult, error) {
 	params := url.Values{
 		"artist": {artistMBID},
 		"fmt":    {"json"},
@@ -75,7 +75,7 @@ func (c *Client) BrowseReleaseGroups(ctx context.Context, artistMBID string, typ
 }
 
 // AllReleaseGroups pages through all release groups for an artist.
-func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID string, typeFilter string) ([]ReleaseGroup, error) {
+func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID, typeFilter string) ([]ReleaseGroup, error) {
 	const pageSize = 100
 	var all []ReleaseGroup
 
@@ -90,6 +90,26 @@ func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID string, typeFi
 		}
 	}
 	return all, nil
+}
+
+// BrowseReleases returns releases for a release group MBID.
+// Use inc to request sub-resources (e.g. "recordings") or "" for none.
+func (c *Client) BrowseReleases(ctx context.Context, releaseGroupMBID, inc string, limit, offset int) (*ReleaseBrowseResult, error) {
+	params := url.Values{
+		"release-group": {releaseGroupMBID},
+		"fmt":           {"json"},
+		"limit":         {strconv.Itoa(limit)},
+		"offset":        {strconv.Itoa(offset)},
+	}
+	if inc != "" {
+		params.Set("inc", inc)
+	}
+
+	var result ReleaseBrowseResult
+	if err := c.get(ctx, "/release", params, &result); err != nil {
+		return nil, fmt.Errorf("browse releases: %w", err)
+	}
+	return &result, nil
 }
 
 func (c *Client) get(ctx context.Context, path string, params url.Values, dest any) error {
@@ -107,7 +127,7 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, dest a
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("musicbrainz: %s", resp.Status)

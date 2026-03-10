@@ -1,7 +1,8 @@
 package tui
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -55,7 +56,7 @@ func (m sortModel) View(width, height int, bg string) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorAccent).
 		Padding(1, 2).
-		Width(30)
+		Width(40)
 
 	var s string
 	s += titleStyle.Render("Sort by") + "\n\n"
@@ -79,16 +80,16 @@ type sortChosenMsg struct{ mode sortMode }
 type sortCancelMsg struct{}
 
 func sortArtists(items []artistItem, mode sortMode) {
-	sort.SliceStable(items, func(i, j int) bool {
+	slices.SortStableFunc(items, func(a, b artistItem) int {
 		switch mode {
 		case sortByNameArticle:
-			return strings.ToLower(items[i].name) < strings.ToLower(items[j].name)
+			return cmp.Compare(strings.ToLower(a.name), strings.ToLower(b.name))
 		case sortByNewest:
-			return items[i].newestAlbum < items[j].newestAlbum
+			return cmp.Compare(a.newestAlbum, b.newestAlbum)
 		case sortByCount:
-			return items[i].albumCount > items[j].albumCount
+			return cmp.Compare(b.albumCount, a.albumCount) // descending
 		default:
-			return stripArticle(items[i].name) < stripArticle(items[j].name)
+			return cmp.Compare(stripArticle(a.name), stripArticle(b.name))
 		}
 	})
 }
