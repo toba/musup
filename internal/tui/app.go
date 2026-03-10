@@ -146,8 +146,7 @@ func (m Model) View() string {
 	case viewDetail:
 		return m.detail.View()
 	case viewSortPicker:
-		// Show list dimmed with sort overlay
-		return m.sort.View(m.width, m.height)
+		return m.sort.View(m.width, m.height, m.list.View())
 	}
 	return ""
 }

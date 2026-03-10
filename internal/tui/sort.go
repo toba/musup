@@ -12,14 +12,16 @@ type sortMode int
 
 const (
 	sortByName sortMode = iota
+	sortByNameArticle
 	sortByNewest
 	sortByCount
 )
 
 var sortLabels = [...]string{
-	sortByName:   "Name",
-	sortByNewest: "Newest album",
-	sortByCount:  "Album count",
+	sortByName:        "Name",
+	sortByNameArticle: "Name (including \"The\" / \"A\")",
+	sortByNewest:      "Newest album",
+	sortByCount:       "Album count",
 }
 
 type sortModel struct {
@@ -48,7 +50,7 @@ func (m sortModel) Update(msg tea.Msg) (sortModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m sortModel) View(width, height int) string {
+func (m sortModel) View(width, height int, bg string) string {
 	modal := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(colorAccent).
@@ -70,7 +72,7 @@ func (m sortModel) View(width, height int) string {
 	s += sSb59.String()
 
 	rendered := modal.Render(s)
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, rendered)
+	return placeOverlay(width, height, rendered, bg)
 }
 
 type sortChosenMsg struct{ mode sortMode }
@@ -79,12 +81,25 @@ type sortCancelMsg struct{}
 func sortArtists(items []artistItem, mode sortMode) {
 	sort.SliceStable(items, func(i, j int) bool {
 		switch mode {
+		case sortByNameArticle:
+			return strings.ToLower(items[i].name) < strings.ToLower(items[j].name)
 		case sortByNewest:
 			return items[i].newestAlbum < items[j].newestAlbum
 		case sortByCount:
 			return items[i].albumCount > items[j].albumCount
 		default:
-			return items[i].name < items[j].name
+			return stripArticle(items[i].name) < stripArticle(items[j].name)
 		}
 	})
+}
+
+// stripArticle removes leading "The " or "A " for sort comparison.
+func stripArticle(name string) string {
+	lower := strings.ToLower(name)
+	for _, prefix := range []string{"the ", "a "} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.ToLower(name[len(prefix):])
+		}
+	}
+	return lower
 }

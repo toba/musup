@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	colorAccent = lipgloss.Color("#E040FB")
@@ -20,3 +24,76 @@ var (
 	cursorStyle = lipgloss.NewStyle().
 			Foreground(colorAccent)
 )
+
+// placeOverlay centers fg on top of bg, dimming the background.
+func placeOverlay(width, height int, fg, bg string) string {
+	bgLines := strings.Split(bg, "\n")
+	for len(bgLines) < height {
+		bgLines = append(bgLines, "")
+	}
+	if len(bgLines) > height {
+		bgLines = bgLines[:height]
+	}
+
+	// Dim the background
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555"))
+	for i, line := range bgLines {
+		bgLines[i] = dimStyle.Render(stripAnsi(line))
+	}
+
+	fgLines := strings.Split(fg, "\n")
+	fgHeight := len(fgLines)
+	fgWidth := lipgloss.Width(fg)
+
+	startY := max(0, (height-fgHeight)/2)
+	startX := max(0, (width-fgWidth)/2)
+
+	for i, fgLine := range fgLines {
+		bgY := startY + i
+		if bgY >= len(bgLines) {
+			break
+		}
+		bgLines[bgY] = overlayLine(bgLines[bgY], fgLine, startX, width)
+	}
+
+	return strings.Join(bgLines, "\n")
+}
+
+// overlayLine places a foreground line on top of a background line at position x.
+func overlayLine(bgLine, fgLine string, startX, maxWidth int) string {
+	bgRunes := []rune(stripAnsi(bgLine))
+	for len(bgRunes) < maxWidth {
+		bgRunes = append(bgRunes, ' ')
+	}
+
+	prefix := string(bgRunes[:startX])
+	fgWidth := lipgloss.Width(fgLine)
+	suffixStart := startX + fgWidth
+	suffix := ""
+	if suffixStart < len(bgRunes) {
+		suffix = string(bgRunes[suffixStart:])
+	}
+
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555"))
+	return dimStyle.Render(prefix) + fgLine + dimStyle.Render(suffix)
+}
+
+// stripAnsi removes ANSI escape codes from a string.
+func stripAnsi(s string) string {
+	var result strings.Builder
+	inEscape := false
+	for _, r := range s {
+		if r == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}

@@ -33,7 +33,7 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 		m.height = msg.Height
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc":
+		case "esc", "backspace", "left":
 			return m, func() tea.Msg { return backToListMsg{} }
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -75,7 +75,11 @@ func (m detailModel) View() string {
 	var b strings.Builder
 
 	header := titleStyle.Render(m.artist)
-	albumCount := mutedStyle.Render(fmt.Sprintf("%d albums", len(m.albums)))
+	noun := "albums"
+	if len(m.albums) == 1 {
+		noun = "album"
+	}
+	albumCount := mutedStyle.Render(fmt.Sprintf("%d %s", len(m.albums), noun))
 	b.WriteString(header + "  " + albumCount + "\n")
 	b.WriteString(subtleStyle.Render(strings.Repeat("─", 40)) + "\n\n")
 
