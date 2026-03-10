@@ -1,6 +1,7 @@
 package state
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -229,6 +230,32 @@ func TestArtistSummaries_Empty(t *testing.T) {
 	}
 	if len(summaries) != 0 {
 		t.Fatalf("expected 0 summaries, got %d", len(summaries))
+	}
+}
+
+func TestConcurrentWrites(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Simulate concurrent writes from multiple goroutines, which triggers
+	// SQLITE_BUSY if the connection pool has more than one connection.
+	errc := make(chan error, 50)
+	for i := range 50 {
+		go func() {
+			errc <- db.UpsertFile(FileRecord{
+				Path:      fmt.Sprintf("artist/album/song%d.flac", i),
+				Size:      int64(i * 100),
+				ModTime:   now,
+				Artist:    "Test",
+				Album:     "Album",
+				ScannedAt: now,
+			})
+		}()
+	}
+	for range 50 {
+		if err := <-errc; err != nil {
+			t.Fatalf("concurrent UpsertFile: %v", err)
+		}
 	}
 }
 

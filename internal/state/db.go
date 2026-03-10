@@ -39,9 +39,14 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL"); err != nil {
+	// SQLite only supports one writer at a time. Limit the pool to a single
+	// connection so concurrent goroutines serialize through database/sql
+	// instead of getting SQLITE_BUSY.
+	sqlDB.SetMaxOpenConns(1)
+
+	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000"); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("set WAL mode: %w", err)
+		return nil, fmt.Errorf("set pragmas: %w", err)
 	}
 
 	d := &DB{db: sqlDB}
