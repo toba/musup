@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -36,7 +37,6 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 
 	isSelected := index == m.Index()
-	listWidth := m.Width()
 
 	cursor := "  "
 	nameStyle := lipgloss.NewStyle()
@@ -51,38 +51,45 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		syncInd = localStyle.Render("· ")
 	}
 
-	// Track ratio string
-	var trackStr string
+	const (
+		nameCol  = 30
+		numWidth = 7 // fits "xxx/yyy"
+	)
+
+	// Track column: right-align number part within fixed width
+	var trackNum string
 	if ai.synced {
-		trackStr = fmt.Sprintf("%d/%d tracks", ai.trackCount, ai.totalTracks)
+		trackNum = fmt.Sprintf("%d/%d", ai.trackCount, ai.totalTracks)
 	} else {
-		trackStr = fmt.Sprintf("%d tracks", ai.trackCount)
+		trackNum = strconv.Itoa(ai.trackCount)
 	}
+	trackNoun := "tracks"
+	if !ai.synced && ai.trackCount == 1 {
+		trackNoun = "track"
+	}
+	trackStr := fmt.Sprintf("%*s %s", numWidth, trackNum, trackNoun)
 
-	// Album ratio string
-	var albumStr string
+	// Album column: right-align number part within fixed width
+	var albumNum string
 	if ai.synced {
-		albumStr = fmt.Sprintf("in %d/%d albums", ai.albumCount, ai.totalAlbums)
+		albumNum = fmt.Sprintf("in %d/%d", ai.albumCount, ai.totalAlbums)
 	} else {
-		albumStr = fmt.Sprintf("%d albums", ai.albumCount)
+		albumNum = strconv.Itoa(ai.albumCount)
 	}
-
-	rightPart := trackStr + "  " + albumStr
-	// cursor(2) + sync(2) + rightPart + gaps(3)
-	fixedWidth := 2 + 2 + len(rightPart) + 3
-	nameWidth := listWidth - fixedWidth
-	if nameWidth < 10 {
-		nameWidth = 10
+	albumNoun := "albums"
+	if !ai.synced && ai.albumCount == 1 {
+		albumNoun = "album"
 	}
+	albumStr := fmt.Sprintf("%*s %s", numWidth, albumNum, albumNoun)
 
-	// Truncate or pad artist name
+	// Truncate or pad artist name to fixed column width
 	name := ai.name
-	if len(name) > nameWidth {
-		name = name[:nameWidth-3] + "..."
+	if len(name) > nameCol {
+		name = name[:nameCol-3] + "..."
 	}
-	name += strings.Repeat(" ", max(0, nameWidth-len(name)))
+	name += strings.Repeat(" ", max(0, nameCol-len(name)))
 
-	line := cursor + syncInd + nameStyle.Render(name) + " " + mutedStyle.Render(rightPart)
+	line := cursor + syncInd + nameStyle.Render(name) + " " + mutedStyle.Render(trackStr) + "  " + mutedStyle.Render(albumStr)
 
 	_, _ = fmt.Fprint(w, line)
 }
