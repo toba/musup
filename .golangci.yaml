@@ -1,0 +1,92 @@
+# https://golangci-lint.run/docs/configuration/file/
+# https://github.com/golangci/golangci-lint/blob/HEAD/.golangci.reference.yml
+# run: golangci-lint run
+version: "2"
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+    # - golines
+
+  settings:
+    # goimports:
+    #   local-prefixes:
+    #     - github.com/pacer/core
+    golines: # https://golangci-lint.run/docs/formatters/configuration/#golines
+      max-len: 90
+      shorten-comments: true
+
+linters:
+  default: standard
+  enable:
+    - errorlint # error wrapping best practices
+    - gocritic # opinionated but useful
+    - misspell # spelling mistakes
+    # modernize: disabled — go fix ./... applies the same analyzers (golang.org/x/tools/go/analysis/passes/modernize)
+    - nilerr # returning nil after checking err != nil
+    - unconvert # unnecessary type conversions
+    - unparam # unused function parameters
+    - whitespace # leading/trailing whitespace
+    - gocheckcompilerdirectives
+    - godoclint
+    - gosec
+    - importas
+    # intrange: disabled — go fix ./... applies the same rangeint analyzer
+    - perfsprint
+    - usestdlibvars
+  disable:
+    - goconst
+    - modernize # go fix ./... applies the same modernize analyzers
+    - intrange # go fix ./... applies the same rangeint analyzer
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+    gosec:
+      excludes:
+        - G104 # unhandled errors — already covered by errcheck
+        - G120 # MaxBytesReader — only triggers in test HTTP handlers
+        - G204 # subprocess with variable args — unavoidable for CLI wrapping git/gh
+        - G301 # directory perms > 0750 — 0755 is standard for non-secret dirs
+        - G304 # file inclusion via variable — unavoidable for any file-based tool
+        - G306 # WriteFile perms > 0600 — config/issue files should be world-readable
+        - G703 # path traversal via taint — same as G304, unavoidable for file-based tool
+
+    gocritic: # https://go-critic.com/overview
+      enabled-checks:
+        - sqlQuery
+        - boolExprSimplify
+        - deferUnlambda
+        - dupImport
+        - emptyFallthrough
+        - emptyStringTest
+        - nestingReduce
+        - paramTypeCombine
+        - ptrToRefParam
+        - stringConcatSimplify
+        - typeUnparen
+        - appendCombine
+        # - hugeParam
+        - preferFprint
+        - preferStringWriter
+        - rangeExprCopy
+        - sliceClear
+      disabled-checks:
+        - ifElseChain # switch vs if-else is style preference
+        - exitAfterDefer # sometimes intentional
+
+  exclusions:
+    rules:
+      # errcheck in tests is noisy — test helpers intentionally ignore errors
+      - linters: [errcheck]
+        path: _test\.go
+
+    paths:
+      - ".*\\.my\\.go$"
+      - ".*\\.sql\\.go$" # sqlc-generated files
+      - main.go
+      - "^\\.claude/"

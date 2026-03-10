@@ -1,0 +1,11 @@
+todo:
+    path: .issues
+    default_status: draft
+    default_type: task
+    sync:
+        github:
+            repo: toba/musup
+changelog: weekly
+companions:
+    brew: https://github.com/toba/homebrew-musup.git
+    scoop: https://github.com/toba/scoop-musup.git

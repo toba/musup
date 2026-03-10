@@ -1,0 +1,150 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+
+          ASSET="musup_darwin_arm64.tar.gz"
+          SHA=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt -O - \
+            | grep "$ASSET" | awk '{print $1}')
+
+          if [ -z "$SHA" ]; then
+            echo "ERROR: Could not extract SHA256 for $ASSET"
+            exit 1
+          fi
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/homebrew-musup.git" tap
+          cd tap
+
+          cat > Formula/musup.rb << FORMULA
+          class Musup < Formula
+            desc "Check for new album releases from artists in your music library"
+            homepage "https://github.com/toba/musup"
+            url "https://github.com/toba/musup/releases/download/${TAG}/musup_darwin_arm64.tar.gz"
+            version "${VERSION}"
+            sha256 "${SHA}"
+            license "Apache-2.0"
+
+            depends_on :macos
+            depends_on arch: :arm64
+
+            def install
+              bin.install "musup"
+            end
+
+            test do
+              assert_match "musup", shell_output("#{bin}/musup version")
+            end
+          end
+          FORMULA
+
+          sed -i 's/^          //' Formula/musup.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/musup.rb
+          git commit -m "bump to ${VERSION}"
+          git push
+
+  update-scoop:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Scoop manifest
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+
+          CHECKSUMS=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt -O -)
+
+          SHA_AMD64=$(echo "$CHECKSUMS" | grep "musup_windows_amd64.zip" | awk '{print $1}')
+          SHA_ARM64=$(echo "$CHECKSUMS" | grep "musup_windows_arm64.zip" | awk '{print $1}')
+
+          if [ -z "$SHA_AMD64" ]; then
+            echo "ERROR: Could not extract SHA256 for musup_windows_amd64.zip"
+            exit 1
+          fi
+          if [ -z "$SHA_ARM64" ]; then
+            echo "ERROR: Could not extract SHA256 for musup_windows_arm64.zip"
+            exit 1
+          fi
+
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/scoop-musup.git" bucket
+          cd bucket
+
+          jq -n \
+            --arg version "$VERSION" \
+            --arg sha_amd64 "$SHA_AMD64" \
+            --arg sha_arm64 "$SHA_ARM64" \
+            --arg tag "$TAG" \
+            --arg desc "Check for new album releases from artists in your music library" \
+            '{
+              version: $version,
+              description: $desc,
+              homepage: "https://github.com/toba/musup",
+              license: "Apache-2.0",
+              architecture: {
+                "64bit": {
+                  url: ("https://github.com/toba/musup/releases/download/" + $tag + "/musup_windows_amd64.zip"),
+                  hash: $sha_amd64
+                },
+                arm64: {
+                  url: ("https://github.com/toba/musup/releases/download/" + $tag + "/musup_windows_arm64.zip"),
+                  hash: $sha_arm64
+                }
+              },
+              bin: ["musup.exe"],
+              checkver: { github: "https://github.com/toba/musup" },
+              autoupdate: {
+                architecture: {
+                  "64bit": {
+                    url: "https://github.com/toba/musup/releases/download/v$version/musup_windows_amd64.zip"
+                  },
+                  arm64: {
+                    url: "https://github.com/toba/musup/releases/download/v$version/musup_windows_arm64.zip"
+                  }
+                }
+              }
+            }' > bucket/musup.json
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bucket/musup.json
+          git commit -m "bump to ${VERSION}"
+          git push
