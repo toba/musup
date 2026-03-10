@@ -9,3 +9,17 @@ changelog: weekly
 companions:
     brew: https://github.com/toba/homebrew-musup.git
     scoop: https://github.com/toba/scoop-musup.git
+citations:
+    - repo: dhowden/tag
+      branch: master
+      notes: ID3, MP4 and OGG/FLAC metadata parsing in Go
+      paths:
+        high: ['**/*.go']
+        medium: [go.mod, go.sum]
+        low: [.github/**, README.md, LICENSE]
+    - repo: michiwend/gomusicbrainz
+      branch: master
+      notes: a Go (Golang) MusicBrainz WS2 client library - work in progress
+      paths:
+        high: ['**/*.go']
+        low: [.github/**, README.md, LICENSE]
