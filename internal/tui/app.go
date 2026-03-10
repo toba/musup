@@ -17,6 +17,7 @@ const (
 	viewList
 	viewDetail
 	viewSortPicker
+	viewSyncing
 )
 
 type Model struct {
@@ -29,9 +30,11 @@ type Model struct {
 
 	scanStatus string
 
-	list   listModel
-	detail detailModel
-	sort   sortModel
+	list      listModel
+	detail    detailModel
+	sort      sortModel
+	sync      syncModel
+	prevState viewState // view behind the sync modal
 }
 
 func New(db *state.DB, root string) Model {
@@ -82,6 +85,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list = newListModel(m.db, msg.summaries, m.width, m.height)
 		m.state = viewList
 		return m, nil
+	case startSyncMsg:
+		m.prevState = m.state
+		m.sync = newSyncModel(m.db, m.mb, msg.artist)
+		m.state = viewSyncing
+		return m, m.sync.Init()
 	}
 
 	switch m.state {
@@ -133,6 +141,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, cmd
+
+	case viewSyncing:
+		// Allow quit during sync
+		if msg, ok := msg.(tea.KeyMsg); ok {
+			if msg.String() == "q" || msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+		}
+
+		var cmd tea.Cmd
+		m.sync, cmd = m.sync.Update(msg)
+
+		if m.sync.done {
+			if m.sync.err != nil {
+				// On error, go back to where we were, show error in detail view
+				m.detail = newDetailModel(m.db, m.mb, m.sync.artist)
+				m.detail.height = m.height
+				m.detail.fetchErr = m.sync.err
+				m.state = viewDetail
+				return m, nil
+			}
+			// On success, show detail view with results
+			m.detail = newDetailModel(m.db, m.mb, m.sync.artist)
+			m.detail.height = m.height
+			m.state = viewDetail
+			return m, nil
+		}
+
+		return m, cmd
 	}
 
 	return m, nil
@@ -151,6 +188,18 @@ func (m Model) View() string {
 		return m.detail.View()
 	case viewSortPicker:
 		return m.sort.View(m.width, m.height, m.list.View())
+	case viewSyncing:
+		bg := m.bgView()
+		return m.sync.View(m.width, m.height, bg)
 	}
 	return ""
+}
+
+func (m Model) bgView() string {
+	switch m.prevState {
+	case viewDetail:
+		return m.detail.View()
+	default:
+		return m.list.View()
+	}
 }

@@ -107,6 +107,10 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return showDetailMsg{artist: item.name} }
 			}
+		case "u":
+			if item, ok := m.list.SelectedItem().(artistItem); ok {
+				return m, func() tea.Msg { return startSyncMsg{artist: item.name} }
+			}
 		case "o":
 			return m, func() tea.Msg { return showSortMsg{} }
 		case "q", "ctrl+c":
@@ -137,7 +141,7 @@ func (m *listModel) applySort() {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · o: sort · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · o: sort · u: sync · enter: detail · q: quit"))
 	return b.String()
 }
 
