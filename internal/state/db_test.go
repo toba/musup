@@ -1,10 +1,13 @@
 package state
 
 import (
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 func openTestDB(t *testing.T) *DB {
@@ -451,6 +454,72 @@ func TestMarkLocalTracks(t *testing.T) {
 	}
 }
 
+func TestMarkLocalTracks_FuzzyTitle(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Local files have canonical titles and track numbers from file tags
+	files := []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Kryptonite", TrackNumber: 3, ScannedAt: now},
+		{Path: "a/2.flac", Size: 200, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Loser", TrackNumber: 4, ScannedAt: now},
+		{Path: "a/3.flac", Size: 300, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Be Like That", TrackNumber: 7, ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	// MusicBrainz tracks may have release-specific title variations
+	tracks := []TrackRecord{
+		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Kryptonite", Position: 3},         // exact match
+		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Loser (radio edit)", Position: 4}, // title differs, same position
+		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Be Like That", Position: 7},       // exact match
+		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Duck and Run", Position: 5},       // not local
+		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "By My Side", Position: 6},         // not local
+	}
+	for _, tr := range tracks {
+		if err := db.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	got, err := db.Tracks("3 Doors Down", "The Better Life")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+
+	localByTitle := make(map[string]bool)
+	for _, tr := range got {
+		localByTitle[tr.Title] = tr.Local
+	}
+
+	// "Kryptonite" — exact title match
+	if !localByTitle["Kryptonite"] {
+		t.Error("expected Kryptonite to be local (exact match)")
+	}
+	// "Loser (radio edit)" — title differs but same artist+album+position as local "Loser"
+	if !localByTitle["Loser (radio edit)"] {
+		t.Error("expected 'Loser (radio edit)' to be local (position match)")
+	}
+	// "Be Like That" — exact match
+	if !localByTitle["Be Like That"] {
+		t.Error("expected Be Like That to be local (exact match)")
+	}
+	// "Duck and Run" — no local file
+	if localByTitle["Duck and Run"] {
+		t.Error("expected Duck and Run to NOT be local")
+	}
+	// "By My Side" — no local file
+	if localByTitle["By My Side"] {
+		t.Error("expected By My Side to NOT be local")
+	}
+}
+
 func TestMarkLocalTracks_ClearsStale(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
@@ -638,6 +707,115 @@ func TestFileTitleMigration(t *testing.T) {
 	}
 	if title != "Airbag" {
 		t.Fatalf("expected title Airbag, got %q", title)
+	}
+}
+
+func TestMigrationFromV0(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// Create a raw DB with the old schema (no track_number column).
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+	const oldSchema = `
+	CREATE TABLE files (
+		path       TEXT PRIMARY KEY,
+		size       INTEGER NOT NULL,
+		mod_time   TEXT NOT NULL,
+		artist     TEXT NOT NULL,
+		album      TEXT NOT NULL DEFAULT '',
+		title      TEXT NOT NULL DEFAULT '',
+		scanned_at TEXT NOT NULL
+	);
+	CREATE TABLE albums (
+		artist_name  TEXT NOT NULL,
+		title        TEXT NOT NULL,
+		mbid         TEXT NOT NULL DEFAULT '',
+		release_date TEXT NOT NULL DEFAULT '',
+		primary_type TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (artist_name, title)
+	);
+	CREATE TABLE tracks (
+		artist_name TEXT NOT NULL,
+		album_title TEXT NOT NULL,
+		title       TEXT NOT NULL,
+		position    INTEGER NOT NULL DEFAULT 0,
+		mbid        TEXT NOT NULL DEFAULT '',
+		length_ms   INTEGER NOT NULL DEFAULT 0,
+		local       INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (artist_name, album_title, title)
+	);
+	CREATE TABLE artists (
+		name            TEXT PRIMARY KEY,
+		mbid            TEXT NOT NULL DEFAULT '',
+		last_checked_at TEXT NOT NULL DEFAULT '',
+		latest_release  TEXT NOT NULL DEFAULT '',
+		latest_date     TEXT NOT NULL DEFAULT '',
+		not_found       INTEGER NOT NULL DEFAULT 0
+	);
+	`
+	if _, err := rawDB.Exec(oldSchema); err != nil {
+		t.Fatalf("exec old schema: %v", err)
+	}
+	if err := rawDB.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	// Reopen via state.Open which triggers migrate().
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open after old schema: %v", err)
+	}
+	defer db.Close()
+
+	// Verify track_number column exists.
+	var colCount int
+	err = db.db.QueryRow(
+		"SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'track_number'",
+	).Scan(&colCount)
+	if err != nil {
+		t.Fatalf("check track_number column: %v", err)
+	}
+	if colCount != 1 {
+		t.Fatal("expected track_number column to exist after migration")
+	}
+
+	// Verify user_version is 2.
+	var version int
+	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if version != 2 {
+		t.Fatalf("expected user_version 2, got %d", version)
+	}
+}
+
+func TestMigrationIdempotent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// First open: creates fresh DB at latest version.
+	db1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := db1.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+
+	// Second open: migrate() should be a no-op.
+	db2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer db2.Close()
+
+	var version int
+	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read user_version: %v", err)
+	}
+	if version != 2 {
+		t.Fatalf("expected user_version 2, got %d", version)
 	}
 }
 

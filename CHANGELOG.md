@@ -6,6 +6,10 @@
 
 - Implement MusicBrainz client for release lookups (88e-3s0)
 
+### 🐛 Fixes
+
+- Track matching fails for artists with MusicBrainz title variations (sx2-isj)
+
 ### 🗜️ Tweaks
 
 - Find API source for artist album releases (f0n-a2b)

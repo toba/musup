@@ -220,7 +220,7 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 					if err := db.UpsertTrack(state.TrackRecord{
 						ArtistName: artist,
 						AlbumTitle: rg.Title,
-						Title:      track.Title,
+						Title:      track.Recording.Title,
 						Position:   track.Position,
 						MBID:       track.Recording.ID,
 						LengthMS:   track.Recording.Length,

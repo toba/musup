@@ -10,13 +10,14 @@ import (
 
 // FileRecord represents a scanned music file.
 type FileRecord struct {
-	Path      string
-	Size      int64
-	ModTime   time.Time
-	Artist    string
-	Album     string
-	Title     string
-	ScannedAt time.Time
+	Path        string
+	Size        int64
+	ModTime     time.Time
+	Artist      string
+	Album       string
+	Title       string
+	TrackNumber int
+	ScannedAt   time.Time
 }
 
 // AlbumRecord represents an album in the catalog (from MusicBrainz or local).
@@ -87,66 +88,81 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) migrate() error {
-	const schema = `
-	CREATE TABLE IF NOT EXISTS files (
-		path        TEXT PRIMARY KEY,
-		size        INTEGER NOT NULL,
-		mod_time    TEXT NOT NULL,
-		artist      TEXT NOT NULL,
-		album       TEXT NOT NULL DEFAULT '',
-		title       TEXT NOT NULL DEFAULT '',
-		scanned_at  TEXT NOT NULL
-	);
-
-	CREATE TABLE IF NOT EXISTS albums (
-		artist_name  TEXT NOT NULL,
-		title        TEXT NOT NULL,
-		mbid         TEXT NOT NULL DEFAULT '',
-		release_date TEXT NOT NULL DEFAULT '',
-		primary_type TEXT NOT NULL DEFAULT '',
-		PRIMARY KEY (artist_name, title)
-	);
-
-	CREATE TABLE IF NOT EXISTS tracks (
-		artist_name  TEXT NOT NULL,
-		album_title  TEXT NOT NULL,
-		title        TEXT NOT NULL,
-		position     INTEGER NOT NULL DEFAULT 0,
-		mbid         TEXT NOT NULL DEFAULT '',
-		length_ms    INTEGER NOT NULL DEFAULT 0,
-		local        INTEGER NOT NULL DEFAULT 0,
-		PRIMARY KEY (artist_name, album_title, title)
-	);
-
-	CREATE TABLE IF NOT EXISTS artists (
-		name             TEXT PRIMARY KEY,
-		mbid             TEXT NOT NULL DEFAULT '',
-		last_checked_at  TEXT NOT NULL DEFAULT '',
-		latest_release   TEXT NOT NULL DEFAULT '',
-		latest_date      TEXT NOT NULL DEFAULT '',
-		not_found        INTEGER NOT NULL DEFAULT 0
-	);
-	`
-	if _, err := d.db.Exec(schema); err != nil {
-		return err
+	var version int
+	if err := d.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
 	}
 
-	// Migration: add not_found column if missing.
-	if err := d.addColumnIfMissing("artists", "not_found", "INTEGER NOT NULL DEFAULT 0"); err != nil {
-		return err
+	// Version 0 → 1: initial schema + historical fixups
+	if version < 1 {
+		const schema = `
+		CREATE TABLE IF NOT EXISTS files (
+			path         TEXT PRIMARY KEY,
+			size         INTEGER NOT NULL,
+			mod_time     TEXT NOT NULL,
+			artist       TEXT NOT NULL,
+			album        TEXT NOT NULL DEFAULT '',
+			title        TEXT NOT NULL DEFAULT '',
+			track_number INTEGER NOT NULL DEFAULT 0,
+			scanned_at   TEXT NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS albums (
+			artist_name  TEXT NOT NULL,
+			title        TEXT NOT NULL,
+			mbid         TEXT NOT NULL DEFAULT '',
+			release_date TEXT NOT NULL DEFAULT '',
+			primary_type TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (artist_name, title)
+		);
+
+		CREATE TABLE IF NOT EXISTS tracks (
+			artist_name  TEXT NOT NULL,
+			album_title  TEXT NOT NULL,
+			title        TEXT NOT NULL,
+			position     INTEGER NOT NULL DEFAULT 0,
+			mbid         TEXT NOT NULL DEFAULT '',
+			length_ms    INTEGER NOT NULL DEFAULT 0,
+			local        INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (artist_name, album_title, title)
+		);
+
+		CREATE TABLE IF NOT EXISTS artists (
+			name             TEXT PRIMARY KEY,
+			mbid             TEXT NOT NULL DEFAULT '',
+			last_checked_at  TEXT NOT NULL DEFAULT '',
+			latest_release   TEXT NOT NULL DEFAULT '',
+			latest_date      TEXT NOT NULL DEFAULT '',
+			not_found        INTEGER NOT NULL DEFAULT 0
+		);
+		`
+		if _, err := d.db.Exec(schema); err != nil {
+			return err
+		}
+		if err := d.addColumnIfMissing("artists", "not_found", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if err := d.addColumnIfMissing("files", "title", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		if err := d.dropAlbumsLocalColumn(); err != nil {
+			return err
+		}
+		version = 1
 	}
 
-	// Migration: add title column to files if missing.
-	if err := d.addColumnIfMissing("files", "title", "TEXT NOT NULL DEFAULT ''"); err != nil {
-		return err
+	// Version 1 → 2: add track_number to files
+	if version < 2 {
+		if err := d.addColumnIfMissing("files", "track_number", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		version = 2
 	}
 
-	// Migration: drop local column from albums if present.
-	if err := d.dropAlbumsLocalColumn(); err != nil {
-		return err
-	}
+	// Future: if version < 3 { ... }
 
-	return nil
+	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	return err
 }
 
 func (d *DB) addColumnIfMissing(table, column, colDef string) error {
@@ -199,19 +215,20 @@ func (d *DB) dropAlbumsLocalColumn() error {
 // UpsertFile inserts or updates a file record.
 func (d *DB) UpsertFile(f FileRecord) error {
 	const q = `
-	INSERT INTO files (path, size, mod_time, artist, album, title, scanned_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, mod_time, artist, album, title, track_number, scanned_at)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
-		size       = excluded.size,
-		mod_time   = excluded.mod_time,
-		artist     = excluded.artist,
-		album      = excluded.album,
-		title      = excluded.title,
-		scanned_at = excluded.scanned_at
+		size         = excluded.size,
+		mod_time     = excluded.mod_time,
+		artist       = excluded.artist,
+		album        = excluded.album,
+		title        = excluded.title,
+		track_number = excluded.track_number,
+		scanned_at   = excluded.scanned_at
 	`
 	_, err := d.db.Exec(q,
 		f.Path, f.Size, f.ModTime.Format(time.RFC3339),
-		f.Artist, f.Album, f.Title, f.ScannedAt.Format(time.RFC3339),
+		f.Artist, f.Album, f.Title, f.TrackNumber, f.ScannedAt.Format(time.RFC3339),
 	)
 	return err
 }
@@ -485,8 +502,8 @@ func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
 	return tracks, rows.Err()
 }
 
-// MarkLocalTracks cross-references the files table to set local flag on tracks
-// matching by artist, album, and title.
+// MarkLocalTracks cross-references the files table to set local flag on tracks.
+// Matches by artist + album + (case-insensitive title OR track position).
 func (d *DB) MarkLocalTracks(artistName string) error {
 	const q = `
 	UPDATE tracks SET local = (
@@ -494,7 +511,10 @@ func (d *DB) MarkLocalTracks(artistName string) error {
 			SELECT 1 FROM files
 			WHERE files.artist = tracks.artist_name
 			  AND files.album  = tracks.album_title
-			  AND files.title  = tracks.title
+			  AND (
+			    LOWER(files.title) = LOWER(tracks.title)
+			    OR (files.track_number > 0 AND files.track_number = tracks.position)
+			  )
 		)
 	)
 	WHERE artist_name = ?

@@ -65,16 +65,17 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 			return nil
 		}
 
-		artist, album, title := readTags(absPath)
+		artist, album, title, trackNum := readTags(absPath)
 
 		return db.UpsertFile(state.FileRecord{
-			Path:      relPath,
-			Size:      info.Size(),
-			ModTime:   info.ModTime(),
-			Artist:    artist,
-			Album:     album,
-			Title:     title,
-			ScannedAt: time.Now(),
+			Path:        relPath,
+			Size:        info.Size(),
+			ModTime:     info.ModTime(),
+			Artist:      artist,
+			Album:       album,
+			Title:       title,
+			TrackNumber: trackNum,
+			ScannedAt:   time.Now(),
 		})
 	})
 	if err != nil {
@@ -89,21 +90,22 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 	return nil
 }
 
-func readTags(path string) (artist, album, title string) {
+func readTags(path string) (artist, album, title string, trackNumber int) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", "", ""
+		return "", "", "", 0
 	}
 	defer func() { _ = f.Close() }()
 
 	m, err := tag.ReadFrom(f)
 	if err != nil {
-		return "", "", ""
+		return "", "", "", 0
 	}
 
 	artist = m.AlbumArtist()
 	if artist == "" {
 		artist = m.Artist()
 	}
-	return artist, m.Album(), m.Title()
+	trackNumber, _ = m.Track()
+	return artist, m.Album(), m.Title(), trackNumber
 }

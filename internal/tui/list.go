@@ -56,7 +56,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		numWidth = 7 // fits "xxx/yyy"
 	)
 
-	// Track column: right-align number part within fixed width
+	// Track column: right-align number, left-align noun
 	var trackNum string
 	if ai.synced {
 		trackNum = fmt.Sprintf("%d/%d", ai.trackCount, ai.totalTracks)
@@ -67,12 +67,12 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if !ai.synced && ai.trackCount == 1 {
 		trackNoun = "track"
 	}
-	trackStr := fmt.Sprintf("%*s %s", numWidth, trackNum, trackNoun)
+	trackStr := fmt.Sprintf("%*s %-6s", numWidth, trackNum, trackNoun)
 
-	// Album column: right-align number part within fixed width
+	// Album column: right-align number, left-align noun
 	var albumNum string
 	if ai.synced {
-		albumNum = fmt.Sprintf("in %d/%d", ai.albumCount, ai.totalAlbums)
+		albumNum = fmt.Sprintf("%d/%d", ai.albumCount, ai.totalAlbums)
 	} else {
 		albumNum = strconv.Itoa(ai.albumCount)
 	}
@@ -80,7 +80,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if !ai.synced && ai.albumCount == 1 {
 		albumNoun = "album"
 	}
-	albumStr := fmt.Sprintf("%*s %s", numWidth, albumNum, albumNoun)
+	albumStr := fmt.Sprintf("%*s %-6s", numWidth, albumNum, albumNoun)
 
 	// Truncate or pad artist name to fixed column width
 	name := ai.name

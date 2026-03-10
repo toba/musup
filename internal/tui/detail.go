@@ -167,13 +167,14 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 		title := a.Title
 		padded := title + strings.Repeat(" ", max(0, maxTitleWidth-len(title)))
 
-		ratio := ""
+		ratio := strings.Repeat(" ", 5) // empty when no track info
 		if a.TotalTracks > 0 {
 			ratioStr := fmt.Sprintf("%d/%d", a.LocalTracks, a.TotalTracks)
+			paddedRatio := fmt.Sprintf("%5s", ratioStr)
 			if a.LocalTracks == a.TotalTracks {
-				ratio = localStyle.Render(ratioStr)
+				ratio = localStyle.Render(paddedRatio)
 			} else {
-				ratio = mutedStyle.Render(ratioStr)
+				ratio = mutedStyle.Render(paddedRatio)
 			}
 		}
 
