@@ -50,6 +50,17 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 			return m, func() tea.Msg { return backToListMsg{} }
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "enter":
+			if len(m.catalogAlbums) > 0 && m.cursor >= 0 && m.cursor < len(m.catalogAlbums) {
+				a := m.catalogAlbums[m.cursor]
+				year := ""
+				if len(a.ReleaseDate) >= 4 {
+					year = a.ReleaseDate[:4]
+				}
+				return m, func() tea.Msg {
+					return showAlbumDetailMsg{artist: m.artist, albumTitle: a.Title, year: year}
+				}
+			}
 		case "u":
 			if m.mb != nil {
 				return m, func() tea.Msg { return startSyncMsg{artist: m.artist} }
@@ -122,7 +133,7 @@ func (m detailModel) View() string {
 		b.WriteString(mutedStyle.Render("No albums found."))
 	}
 
-	b.WriteString("\n" + subtleStyle.Render("esc: back · u: update catalog · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render("esc: back · enter: tracks · u: update catalog · q: quit"))
 
 	return b.String()
 }
@@ -130,6 +141,14 @@ func (m detailModel) View() string {
 func (m detailModel) renderCatalog(b *strings.Builder) {
 	viewable := m.viewableLines()
 	end := min(m.offset+viewable, len(m.catalogAlbums))
+
+	// Compute max title width for visible range
+	maxTitleWidth := 0
+	for i := m.offset; i < end; i++ {
+		if len(m.catalogAlbums[i].Title) > maxTitleWidth {
+			maxTitleWidth = len(m.catalogAlbums[i].Title)
+		}
+	}
 
 	for i := m.offset; i < end; i++ {
 		a := m.catalogAlbums[i]
@@ -140,22 +159,25 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 			style = style.Foreground(colorAccent)
 		}
 
-		marker := "  "
-		if a.TotalTracks > 0 && a.LocalTracks == a.TotalTracks {
-			marker = localStyle.Render("\u2713 ")
+		year := "    "
+		if len(a.ReleaseDate) >= 4 {
+			year = a.ReleaseDate[:4]
 		}
 
-		year := ""
-		if len(a.ReleaseDate) >= 4 {
-			year = " (" + a.ReleaseDate[:4] + ")"
-		}
+		title := a.Title
+		padded := title + strings.Repeat(" ", max(0, maxTitleWidth-len(title)))
 
 		ratio := ""
 		if a.TotalTracks > 0 {
-			ratio = mutedStyle.Render(fmt.Sprintf("  [%d/%d]", a.LocalTracks, a.TotalTracks))
+			ratioStr := fmt.Sprintf("%d/%d", a.LocalTracks, a.TotalTracks)
+			if a.LocalTracks == a.TotalTracks {
+				ratio = localStyle.Render(ratioStr)
+			} else {
+				ratio = mutedStyle.Render(ratioStr)
+			}
 		}
 
-		b.WriteString(cursor + marker + style.Render(a.Title+year) + ratio + "\n")
+		b.WriteString(cursor + mutedStyle.Render(year) + "  " + style.Render(padded) + "  " + ratio + "\n")
 	}
 }
 
@@ -175,3 +197,9 @@ func (m detailModel) renderLocalAlbums(b *strings.Builder) {
 }
 
 type backToListMsg struct{}
+
+type showAlbumDetailMsg struct {
+	artist     string
+	albumTitle string
+	year       string
+}

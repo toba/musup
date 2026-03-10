@@ -16,6 +16,7 @@ const (
 	viewScanning viewState = iota
 	viewList
 	viewDetail
+	viewAlbumDetail
 	viewSortPicker
 	viewSyncing
 )
@@ -30,11 +31,12 @@ type Model struct {
 
 	scanStatus string
 
-	list      listModel
-	detail    detailModel
-	sort      sortModel
-	sync      syncModel
-	prevState viewState // view behind the sync modal
+	list        listModel
+	detail      detailModel
+	albumDetail albumDetailModel
+	sort        sortModel
+	sync        syncModel
+	prevState   viewState // view behind the sync modal
 }
 
 func New(db *state.DB, root string) Model {
@@ -121,8 +123,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case viewDetail:
 		var cmd tea.Cmd
 		m.detail, cmd = m.detail.Update(msg)
-		if _, ok := msg.(backToListMsg); ok {
+		switch msg := msg.(type) {
+		case backToListMsg:
 			m.state = viewList
+			return m, nil
+		case showAlbumDetailMsg:
+			m.albumDetail = newAlbumDetailModel(m.db, msg.artist, msg.albumTitle, msg.year)
+			m.albumDetail.height = m.height
+			m.state = viewAlbumDetail
+			return m, nil
+		}
+		return m, cmd
+
+	case viewAlbumDetail:
+		var cmd tea.Cmd
+		m.albumDetail, cmd = m.albumDetail.Update(msg)
+		if _, ok := msg.(backToDetailMsg); ok {
+			m.state = viewDetail
 			return m, nil
 		}
 		return m, cmd
@@ -162,7 +179,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = viewDetail
 				return m, nil
 			}
-			// On success, show detail view with results
+			// On success, refresh list and show detail view with results
+			m.list.refreshItems()
 			m.detail = newDetailModel(m.db, m.mb, m.sync.artist)
 			m.detail.height = m.height
 			m.state = viewDetail
@@ -186,6 +204,8 @@ func (m Model) View() string {
 		return m.list.View()
 	case viewDetail:
 		return m.detail.View()
+	case viewAlbumDetail:
+		return m.albumDetail.View()
 	case viewSortPicker:
 		return m.sort.View(m.width, m.height, m.list.View())
 	case viewSyncing:
@@ -199,6 +219,8 @@ func (m Model) bgView() string {
 	switch m.prevState {
 	case viewDetail:
 		return m.detail.View()
+	case viewAlbumDetail:
+		return m.albumDetail.View()
 	default:
 		return m.list.View()
 	}

@@ -213,11 +213,59 @@ func TestArtistSummaries(t *testing.T) {
 		t.Fatal("expected Alpha to have a newest album")
 	}
 
+	if summaries[0].TrackCount != 3 {
+		t.Fatalf("expected Alpha to have 3 tracks, got %d", summaries[0].TrackCount)
+	}
+	if summaries[0].Synced {
+		t.Fatal("expected Alpha to not be synced")
+	}
+
 	if summaries[1].Name != "Zed" {
 		t.Fatalf("expected second artist Zed, got %q", summaries[1].Name)
 	}
 	if summaries[1].AlbumCount != 1 {
 		t.Fatalf("expected Zed to have 1 album, got %d", summaries[1].AlbumCount)
+	}
+	if summaries[1].TrackCount != 1 {
+		t.Fatalf("expected Zed to have 1 track, got %d", summaries[1].TrackCount)
+	}
+	if summaries[1].Synced {
+		t.Fatal("expected Zed to not be synced")
+	}
+}
+
+func TestArtistSummaries_Synced(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Radiohead", Album: "OK Computer", ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Before artist record: not synced
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if summaries[0].Synced {
+		t.Fatal("expected not synced before artist record")
+	}
+
+	// Insert artist with MBID
+	if err := db.UpsertArtist(ArtistRecord{
+		Name: "Radiohead", MBID: "abc-123", LastCheckedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertArtist: %v", err)
+	}
+
+	summaries, err = db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if !summaries[0].Synced {
+		t.Fatal("expected synced after artist record with MBID")
 	}
 }
 
@@ -332,12 +380,12 @@ func TestUpsertAlbumAndQuery(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("expected 3 albums, got %d", len(got))
 	}
-	// Newest first
-	if got[0].Title != "A Moon Shaped Pool" {
-		t.Fatalf("expected newest album first, got %q", got[0].Title)
+	// Oldest first (ASC)
+	if got[0].Title != "OK Computer" {
+		t.Fatalf("expected oldest album first, got %q", got[0].Title)
 	}
-	if got[2].Title != "OK Computer" {
-		t.Fatalf("expected oldest album last, got %q", got[2].Title)
+	if got[2].Title != "A Moon Shaped Pool" {
+		t.Fatalf("expected newest album last, got %q", got[2].Title)
 	}
 }
 
@@ -545,23 +593,23 @@ func TestAlbumsWithTrackCounts(t *testing.T) {
 		t.Fatalf("expected 2 albums, got %d", len(got))
 	}
 
-	// Kid A (2000) should be first (newest)
-	if got[0].Title != "Kid A" {
-		t.Fatalf("expected Kid A first, got %q", got[0].Title)
+	// OK Computer (1997) should be first (oldest, ASC)
+	if got[0].Title != "OK Computer" {
+		t.Fatalf("expected OK Computer first, got %q", got[0].Title)
 	}
-	if got[0].TotalTracks != 0 || got[0].LocalTracks != 0 {
-		t.Fatalf("Kid A should have 0 tracks, got total=%d local=%d", got[0].TotalTracks, got[0].LocalTracks)
+	if got[0].TotalTracks != 3 {
+		t.Fatalf("expected 3 total tracks, got %d", got[0].TotalTracks)
+	}
+	if got[0].LocalTracks != 2 {
+		t.Fatalf("expected 2 local tracks, got %d", got[0].LocalTracks)
 	}
 
-	// OK Computer
-	if got[1].Title != "OK Computer" {
-		t.Fatalf("expected OK Computer second, got %q", got[1].Title)
+	// Kid A (2000) second
+	if got[1].Title != "Kid A" {
+		t.Fatalf("expected Kid A second, got %q", got[1].Title)
 	}
-	if got[1].TotalTracks != 3 {
-		t.Fatalf("expected 3 total tracks, got %d", got[1].TotalTracks)
-	}
-	if got[1].LocalTracks != 2 {
-		t.Fatalf("expected 2 local tracks, got %d", got[1].LocalTracks)
+	if got[1].TotalTracks != 0 || got[1].LocalTracks != 0 {
+		t.Fatalf("Kid A should have 0 tracks, got total=%d local=%d", got[1].TotalTracks, got[1].LocalTracks)
 	}
 }
 

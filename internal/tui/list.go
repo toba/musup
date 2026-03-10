@@ -13,8 +13,12 @@ import (
 
 type artistItem struct {
 	name        string
-	albumCount  int
-	newestAlbum string
+	albumCount  int    // local
+	newestAlbum string // kept for sort
+	trackCount  int    // local
+	totalAlbums int    // catalog (0 = not synced)
+	totalTracks int    // catalog (0 = not synced)
+	synced      bool
 }
 
 func (i artistItem) FilterValue() string { return i.name }
@@ -32,6 +36,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 
 	isSelected := index == m.Index()
+	listWidth := m.Width()
 
 	cursor := "  "
 	nameStyle := lipgloss.NewStyle()
@@ -40,17 +45,44 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	noun := "albums"
-	if ai.albumCount == 1 {
-		noun = "album"
-	}
-	meta := mutedStyle.Render(fmt.Sprintf(" %d %s", ai.albumCount, noun))
-	newest := ""
-	if ai.newestAlbum != "" && m.Width() > 60 {
-		newest = subtleStyle.Render(" · " + ai.newestAlbum)
+	// Sync indicator: 2 chars
+	syncInd := "  "
+	if ai.synced {
+		syncInd = localStyle.Render("· ")
 	}
 
-	line := cursor + nameStyle.Render(ai.name) + meta + newest
+	// Track ratio string
+	var trackStr string
+	if ai.synced {
+		trackStr = fmt.Sprintf("%d/%d tracks", ai.trackCount, ai.totalTracks)
+	} else {
+		trackStr = fmt.Sprintf("%d tracks", ai.trackCount)
+	}
+
+	// Album ratio string
+	var albumStr string
+	if ai.synced {
+		albumStr = fmt.Sprintf("in %d/%d albums", ai.albumCount, ai.totalAlbums)
+	} else {
+		albumStr = fmt.Sprintf("%d albums", ai.albumCount)
+	}
+
+	rightPart := trackStr + "  " + albumStr
+	// cursor(2) + sync(2) + rightPart + gaps(3)
+	fixedWidth := 2 + 2 + len(rightPart) + 3
+	nameWidth := listWidth - fixedWidth
+	if nameWidth < 10 {
+		nameWidth = 10
+	}
+
+	// Truncate or pad artist name
+	name := ai.name
+	if len(name) > nameWidth {
+		name = name[:nameWidth-3] + "..."
+	}
+	name += strings.Repeat(" ", max(0, nameWidth-len(name)))
+
+	line := cursor + syncInd + nameStyle.Render(name) + " " + mutedStyle.Render(rightPart)
 
 	_, _ = fmt.Fprint(w, line)
 }
@@ -69,6 +101,10 @@ func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height i
 			name:        s.Name,
 			albumCount:  s.AlbumCount,
 			newestAlbum: s.NewestAlbum,
+			trackCount:  s.TrackCount,
+			totalAlbums: s.TotalAlbums,
+			totalTracks: s.TotalTracks,
+			synced:      s.Synced,
 		}
 	}
 
@@ -124,6 +160,27 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+func (m *listModel) refreshItems() {
+	summaries, err := m.db.ArtistSummaries()
+	if err != nil {
+		return
+	}
+	items := make([]artistItem, len(summaries))
+	for i, s := range summaries {
+		items[i] = artistItem{
+			name:        s.Name,
+			albumCount:  s.AlbumCount,
+			newestAlbum: s.NewestAlbum,
+			trackCount:  s.TrackCount,
+			totalAlbums: s.TotalAlbums,
+			totalTracks: s.TotalTracks,
+			synced:      s.Synced,
+		}
+	}
+	m.allItems = items
+	m.applySort()
 }
 
 func (m *listModel) applySort() {

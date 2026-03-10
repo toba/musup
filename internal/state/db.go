@@ -240,19 +240,37 @@ func (d *DB) FileChanged(path string, size int64, modTime time.Time) (bool, erro
 // ArtistSummary holds aggregate info for one artist.
 type ArtistSummary struct {
 	Name        string
-	AlbumCount  int
-	NewestAlbum string
+	AlbumCount  int    // local albums (from files)
+	NewestAlbum string // kept for sort mode
+	TrackCount  int    // local tracks (from files)
+	TotalAlbums int    // catalog albums (from albums table, 0 if not synced)
+	TotalTracks int    // catalog tracks (from tracks table, 0 if not synced)
+	Synced      bool   // artist has MBID in artists table
 }
 
 // ArtistSummaries returns all artists with album counts and newest album name.
 func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	const q = `
-	SELECT artist, COUNT(DISTINCT album) AS cnt,
-	       COALESCE(MAX(CASE WHEN album != '' THEN album END), '') AS newest
-	FROM files
-	WHERE artist != ''
-	GROUP BY artist
-	ORDER BY artist
+	SELECT f.artist,
+	       COUNT(DISTINCT f.album) AS album_cnt,
+	       COALESCE(MAX(CASE WHEN f.album != '' THEN f.album END), '') AS newest,
+	       COUNT(*) AS track_cnt,
+	       COALESCE(a.mbid, '') AS mbid,
+	       COALESCE(al.total_albums, 0) AS total_albums,
+	       COALESCE(tr.total_tracks, 0) AS total_tracks
+	FROM files f
+	LEFT JOIN artists a ON a.name = f.artist
+	LEFT JOIN (
+	    SELECT artist_name, COUNT(*) AS total_albums
+	    FROM albums GROUP BY artist_name
+	) al ON al.artist_name = f.artist
+	LEFT JOIN (
+	    SELECT artist_name, COUNT(*) AS total_tracks
+	    FROM tracks GROUP BY artist_name
+	) tr ON tr.artist_name = f.artist
+	WHERE f.artist != ''
+	GROUP BY f.artist
+	ORDER BY f.artist
 	`
 	rows, err := d.db.Query(q)
 	if err != nil {
@@ -263,9 +281,12 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	var summaries []ArtistSummary
 	for rows.Next() {
 		var s ArtistSummary
-		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum); err != nil {
+		var mbid string
+		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks); err != nil {
 			return nil, err
 		}
+		s.Synced = mbid != ""
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()
@@ -384,7 +405,7 @@ func (d *DB) UpsertAlbum(a AlbumRecord) error {
 }
 
 // Albums returns all albums for an artist with computed track counts,
-// ordered by release_date DESC.
+// ordered by release_date ASC then title ASC.
 func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 	const q = `
 	SELECT a.artist_name, a.title, a.mbid, a.release_date, a.primary_type,
@@ -398,7 +419,7 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 		GROUP BY artist_name, album_title
 	) t ON t.artist_name = a.artist_name AND t.album_title = a.title
 	WHERE a.artist_name = ?
-	ORDER BY a.release_date DESC, a.title ASC
+	ORDER BY a.release_date ASC, a.title ASC
 	`
 	rows, err := d.db.Query(q, artistName)
 	if err != nil {
