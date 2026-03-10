@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/state"
 )
 
@@ -51,10 +52,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		syncInd = localStyle.Render("· ")
 	}
 
-	const (
-		nameCol  = 30
-		numWidth = 7 // fits "xxx/yyy"
-	)
+	const numWidth = 7 // fits "xxx/yyy"
 
 	// Track column: right-align number, left-align noun
 	var trackNum string
@@ -82,12 +80,18 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 	albumStr := fmt.Sprintf("%*s %-6s", numWidth, albumNum, albumNoun)
 
-	// Truncate or pad artist name to fixed column width
+	// Dynamic name column: fill remaining space after fixed-width columns
+	// Fixed parts: cursor(2) + sync(2) + gap(1) + trackStr(14) + gap(2) + albumStr(14) = 35
+	nameCol := max(10, m.Width()-35)
+
+	// Truncate or pad artist name to dynamic column width (rune-aware)
 	name := ai.name
-	if len(name) > nameCol {
-		name = name[:nameCol-3] + "..."
+	nameWidth := runewidth.StringWidth(name)
+	if nameWidth > nameCol {
+		name = runewidth.Truncate(name, nameCol-3, "...")
+		nameWidth = runewidth.StringWidth(name)
 	}
-	name += strings.Repeat(" ", max(0, nameCol-len(name)))
+	name += strings.Repeat(" ", max(0, nameCol-nameWidth))
 
 	line := cursor + syncInd + nameStyle.Render(name) + " " + mutedStyle.Render(trackStr) + "  " + mutedStyle.Render(albumStr)
 

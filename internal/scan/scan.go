@@ -106,6 +106,61 @@ func readTags(path string) (artist, album, title string, trackNumber int) {
 	if artist == "" {
 		artist = m.Artist()
 	}
+	title = m.Title()
 	trackNumber, _ = m.Track()
-	return artist, m.Album(), m.Title(), trackNumber
+	album = m.Album()
+
+	// Fall back to filename parsing when tags are missing title/track number.
+	// Supports patterns like "06 Somebody's Heaven.flac" or "06. Title.flac".
+	if title == "" || trackNumber == 0 {
+		fnTitle, fnTrack := parseFilename(filepath.Base(path))
+		if title == "" {
+			title = fnTitle
+		}
+		if trackNumber == 0 {
+			trackNumber = fnTrack
+		}
+	}
+
+	return artist, album, title, trackNumber
+}
+
+// parseFilename extracts track number and title from a filename like
+// "06 Somebody's Heaven.flac" or "06. Title.flac".
+func parseFilename(basename string) (title string, trackNumber int) {
+	name := strings.TrimSuffix(basename, filepath.Ext(basename))
+	if name == "" {
+		return "", 0
+	}
+
+	// Try to split leading digits from the rest
+	i := 0
+	for i < len(name) && name[i] >= '0' && name[i] <= '9' {
+		i++
+	}
+	if i == 0 {
+		return name, 0
+	}
+	if i == len(name) {
+		// Entire name is digits — treat as track number only
+		num := 0
+		for _, ch := range name[:i] {
+			num = num*10 + int(ch-'0')
+		}
+		return "", num
+	}
+
+	num := 0
+	for _, ch := range name[:i] {
+		num = num*10 + int(ch-'0')
+	}
+
+	rest := name[i:]
+	// Strip leading separators: space, dot, dash, underscore
+	rest = strings.TrimLeft(rest, " .-_")
+	if rest == "" {
+		return "", num
+	}
+
+	return rest, num
 }

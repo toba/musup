@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/state"
 )
 
@@ -92,13 +93,14 @@ func (m albumDetailModel) View() string {
 		return b.String()
 	}
 
-	// Compute max track name width
+	// Compute max track name display width
 	maxNameWidth := 0
 	viewable := m.viewableLines()
 	end := min(m.offset+viewable, len(m.tracks))
 	for i := m.offset; i < end; i++ {
-		if len(m.tracks[i].Title) > maxNameWidth {
-			maxNameWidth = len(m.tracks[i].Title)
+		w := runewidth.StringWidth(m.tracks[i].Title)
+		if w > maxNameWidth {
+			maxNameWidth = w
 		}
 	}
 
@@ -113,7 +115,8 @@ func (m albumDetailModel) View() string {
 		}
 
 		num := fmt.Sprintf("%3d", t.Position)
-		name := t.Title + strings.Repeat(" ", max(0, maxNameWidth-len(t.Title)))
+		titleWidth := runewidth.StringWidth(t.Title)
+		name := t.Title + strings.Repeat(" ", max(0, maxNameWidth-titleWidth))
 		owned := " "
 		if t.Local {
 			owned = localStyle.Render("✓")

@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
 )
@@ -142,11 +143,12 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 	viewable := m.viewableLines()
 	end := min(m.offset+viewable, len(m.catalogAlbums))
 
-	// Compute max title width for visible range
+	// Compute max title display width for visible range
 	maxTitleWidth := 0
 	for i := m.offset; i < end; i++ {
-		if len(m.catalogAlbums[i].Title) > maxTitleWidth {
-			maxTitleWidth = len(m.catalogAlbums[i].Title)
+		w := runewidth.StringWidth(m.catalogAlbums[i].Title)
+		if w > maxTitleWidth {
+			maxTitleWidth = w
 		}
 	}
 
@@ -165,7 +167,8 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 		}
 
 		title := a.Title
-		padded := title + strings.Repeat(" ", max(0, maxTitleWidth-len(title)))
+		titleWidth := runewidth.StringWidth(title)
+		padded := title + strings.Repeat(" ", max(0, maxTitleWidth-titleWidth))
 
 		ratio := strings.Repeat(" ", 5) // empty when no track info
 		if a.TotalTracks > 0 {
@@ -178,7 +181,13 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 			}
 		}
 
-		b.WriteString(cursor + mutedStyle.Render(year) + "  " + style.Render(padded) + "  " + ratio + "\n")
+		// Show secondary type tag for non-standard albums (Compilation, Live, etc.)
+		typeTag := ""
+		if a.SecondaryTypes != "" {
+			typeTag = "  " + subtleStyle.Render("["+a.SecondaryTypes+"]")
+		}
+
+		b.WriteString(cursor + mutedStyle.Render(year) + "  " + style.Render(padded) + "  " + ratio + typeTag + "\n")
 	}
 }
 

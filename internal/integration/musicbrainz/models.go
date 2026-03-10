@@ -47,6 +47,7 @@ type ReleaseGroup struct {
 	ID               string         `json:"id"`
 	Title            string         `json:"title"`
 	PrimaryType      string         `json:"primary-type"`
+	SecondaryTypes   []string       `json:"secondary-types"`
 	FirstReleaseDate string         `json:"first-release-date"`
 	Disambiguation   string         `json:"disambiguation"`
 	ArtistCredit     []ArtistCredit `json:"artist-credit"`

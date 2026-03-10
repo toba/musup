@@ -198,11 +198,12 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 		}
 
 		if err := db.UpsertAlbum(state.AlbumRecord{
-			ArtistName:  artist,
-			Title:       rg.Title,
-			MBID:        rg.ID,
-			ReleaseDate: rg.FirstReleaseDate,
-			PrimaryType: rg.PrimaryType,
+			ArtistName:     artist,
+			Title:          rg.Title,
+			MBID:           rg.ID,
+			ReleaseDate:    rg.FirstReleaseDate,
+			PrimaryType:    rg.PrimaryType,
+			SecondaryTypes: strings.Join(rg.SecondaryTypes, ","),
 		}); err != nil {
 			ch <- syncDoneMsg{err: fmt.Errorf("upsert album: %w", err)}
 			return

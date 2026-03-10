@@ -22,13 +22,14 @@ type FileRecord struct {
 
 // AlbumRecord represents an album in the catalog (from MusicBrainz or local).
 type AlbumRecord struct {
-	ArtistName  string
-	Title       string
-	MBID        string
-	ReleaseDate string
-	PrimaryType string
-	LocalTracks int
-	TotalTracks int
+	ArtistName     string
+	Title          string
+	MBID           string
+	ReleaseDate    string
+	PrimaryType    string
+	SecondaryTypes string // comma-separated, e.g. "Compilation,Live"
+	LocalTracks    int
+	TotalTracks    int
 }
 
 // TrackRecord represents a track in an album.
@@ -159,7 +160,13 @@ func (d *DB) migrate() error {
 		version = 2
 	}
 
-	// Future: if version < 3 { ... }
+	// Version 2 → 3: add secondary_types to albums
+	if version < 3 {
+		if err := d.addColumnIfMissing("albums", "secondary_types", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		version = 3
+	}
 
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
@@ -238,14 +245,21 @@ func (d *DB) UpsertFile(f FileRecord) error {
 func (d *DB) FileChanged(path string, size int64, modTime time.Time) (bool, error) {
 	var dbSize int64
 	var dbModTime string
+	var title string
 
-	err := d.db.QueryRow("SELECT size, mod_time FROM files WHERE path = ?", path).
-		Scan(&dbSize, &dbModTime)
+	err := d.db.QueryRow("SELECT size, mod_time, title FROM files WHERE path = ?", path).
+		Scan(&dbSize, &dbModTime, &title)
 	if err == sql.ErrNoRows {
 		return true, nil
 	}
 	if err != nil {
 		return false, err
+	}
+
+	// Re-scan if metadata was previously missing (empty title means tags
+	// weren't extracted, and we now have filename-based fallback).
+	if title == "" {
+		return true, nil
 	}
 
 	if dbSize != size || dbModTime != modTime.Format(time.RFC3339) {
@@ -410,14 +424,15 @@ func (d *DB) MarkArtistNotFound(name string) error {
 // UpsertAlbum inserts or updates an album record.
 func (d *DB) UpsertAlbum(a AlbumRecord) error {
 	const q = `
-	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type)
-	VALUES (?, ?, ?, ?, ?)
+	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type, secondary_types)
+	VALUES (?, ?, ?, ?, ?, ?)
 	ON CONFLICT(artist_name, title) DO UPDATE SET
-		mbid         = excluded.mbid,
-		release_date = excluded.release_date,
-		primary_type = excluded.primary_type
+		mbid            = excluded.mbid,
+		release_date    = excluded.release_date,
+		primary_type    = excluded.primary_type,
+		secondary_types = excluded.secondary_types
 	`
-	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType)
+	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType, a.SecondaryTypes)
 	return err
 }
 
@@ -426,7 +441,7 @@ func (d *DB) UpsertAlbum(a AlbumRecord) error {
 func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 	const q = `
 	SELECT a.artist_name, a.title, a.mbid, a.release_date, a.primary_type,
-	       COALESCE(t.total, 0), COALESCE(t.local, 0)
+	       a.secondary_types, COALESCE(t.total, 0), COALESCE(t.local, 0)
 	FROM albums a
 	LEFT JOIN (
 		SELECT artist_name, album_title,
@@ -448,7 +463,7 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 	for rows.Next() {
 		var a AlbumRecord
 		if err := rows.Scan(&a.ArtistName, &a.Title, &a.MBID, &a.ReleaseDate, &a.PrimaryType,
-			&a.TotalTracks, &a.LocalTracks); err != nil {
+			&a.SecondaryTypes, &a.TotalTracks, &a.LocalTracks); err != nil {
 			return nil, err
 		}
 		albums = append(albums, a)

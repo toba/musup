@@ -49,6 +49,7 @@ func TestFileChanged_Unchanged(t *testing.T) {
 		ModTime:   now,
 		Artist:    "Test",
 		Album:     "Album",
+		Title:     "Song",
 		ScannedAt: now,
 	}
 	if err := db.UpsertFile(rec); err != nil {
@@ -520,6 +521,54 @@ func TestMarkLocalTracks_FuzzyTitle(t *testing.T) {
 	}
 }
 
+func TestMarkLocalTracks_TrackNumberOnly(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Simulate files where tags had no title but scanner extracted track number
+	// from filename (e.g. "06 Somebody's Heaven.flac" → title parsed, track=6).
+	// This test covers the case where only track_number matches (title differs).
+	files := []FileRecord{
+		{Path: "a/06.flac", Size: 100, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 6, ScannedAt: now},
+		{Path: "a/11.flac", Size: 200, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 11, ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	tracks := []TrackRecord{
+		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Somebody's Heaven", Position: 6},
+		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Time Turns", Position: 11},
+		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Ellen", Position: 2},
+	}
+	for _, tr := range tracks {
+		if err := db.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	if err := db.MarkLocalTracks("10,000 Maniacs"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	got, err := db.Tracks("10,000 Maniacs", "The Earth Pressed Flat")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+
+	localCount := 0
+	for _, tr := range got {
+		if tr.Local {
+			localCount++
+		}
+	}
+	if localCount != 2 {
+		t.Fatalf("expected 2 local tracks, got %d", localCount)
+	}
+}
+
 func TestMarkLocalTracks_ClearsStale(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
@@ -786,8 +835,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("expected user_version 2, got %d", version)
+	if version != 3 {
+		t.Fatalf("expected user_version 3, got %d", version)
 	}
 }
 
@@ -814,8 +863,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 2 {
-		t.Fatalf("expected user_version 2, got %d", version)
+	if version != 3 {
+		t.Fatalf("expected user_version 3, got %d", version)
 	}
 }
 

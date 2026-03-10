@@ -4,7 +4,8 @@ CLI that scans a folder of music files and reports which artists have released n
 
 ## Rules
 
-- ALWAYS write a failing test before fixing bugs
+- ALWAYS create a `jig todo` issue FIRST before starting any work (bug fix, feature, task, refactor). Set it to `in-progress` and keep it updated as you work
+- For bugs: ALWAYS write a failing test FIRST that reproduces the bug, then fix the code to make it pass
 - Run `scripts/lint.sh` after editing Go files
 
 ## Build & Test

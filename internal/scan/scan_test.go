@@ -59,6 +59,32 @@ func TestScan_SkipsUnsupportedExtensions(t *testing.T) {
 	}
 }
 
+func TestParseFilename(t *testing.T) {
+	tests := []struct {
+		basename  string
+		wantTitle string
+		wantTrack int
+	}{
+		{"06 Somebody's Heaven.flac", "Somebody's Heaven", 6},
+		{"11 Time Turns.flac", "Time Turns", 11},
+		{"01. Intro.mp3", "Intro", 1},
+		{"03 - Hello World.m4a", "Hello World", 3},
+		{"14_Final Track.flac", "Final Track", 14},
+		{"no-number.flac", "no-number", 0},
+		{"123.flac", "", 123},
+		{".flac", "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.basename, func(t *testing.T) {
+			title, track := parseFilename(tt.basename)
+			if title != tt.wantTitle || track != tt.wantTrack {
+				t.Errorf("parseFilename(%q) = (%q, %d), want (%q, %d)",
+					tt.basename, title, track, tt.wantTitle, tt.wantTrack)
+			}
+		})
+	}
+}
+
 func TestSupportedExts(t *testing.T) {
 	expected := []string{".flac", ".mp3", ".m4a", ".mp4", ".aac"}
 	for _, ext := range expected {
