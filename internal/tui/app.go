@@ -18,6 +18,7 @@ const (
 	viewDetail
 	viewAlbumDetail
 	viewSortPicker
+	viewStatusPicker
 	viewSyncing
 )
 
@@ -35,6 +36,7 @@ type Model struct {
 	detail      detailModel
 	albumDetail albumDetailModel
 	sort        sortModel
+	status      statusModel
 	sync        syncModel
 	prevState   viewState // view behind the sync modal
 }
@@ -117,6 +119,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sort = newSortModel(m.list.sortMode)
 			m.state = viewSortPicker
 			return m, nil
+		case showStatusMsg:
+			m.status = newStatusModel(m.db, msg.artist, msg.current)
+			m.state = viewStatusPicker
+			return m, nil
 		}
 		return m, cmd
 
@@ -154,6 +160,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list, cmd = m.list.Update(chosen)
 			return m, cmd
 		case sortCancelMsg:
+			m.state = viewList
+			return m, nil
+		}
+		return m, cmd
+
+	case viewStatusPicker:
+		var cmd tea.Cmd
+		m.status, cmd = m.status.Update(msg)
+		switch msg.(type) {
+		case statusChosenMsg:
+			m.list.refreshItems()
+			m.state = viewList
+			return m, nil
+		case statusCancelMsg:
 			m.state = viewList
 			return m, nil
 		}
@@ -208,6 +228,8 @@ func (m Model) View() string {
 		return m.albumDetail.View()
 	case viewSortPicker:
 		return m.sort.View(m.width, m.height, m.list.View())
+	case viewStatusPicker:
+		return m.status.View(m.width, m.height, m.list.View())
 	case viewSyncing:
 		bg := m.bgView()
 		return m.sync.View(m.width, m.height, bg)

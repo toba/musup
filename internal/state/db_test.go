@@ -835,8 +835,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 3 {
-		t.Fatalf("expected user_version 3, got %d", version)
+	if version != 5 {
+		t.Fatalf("expected user_version 5, got %d", version)
 	}
 }
 
@@ -863,8 +863,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 3 {
-		t.Fatalf("expected user_version 3, got %d", version)
+	if version != 5 {
+		t.Fatalf("expected user_version 5, got %d", version)
 	}
 }
 
@@ -901,5 +901,133 @@ func TestRemoveStaleFiles(t *testing.T) {
 	}
 	if len(artists) != 1 || artists[0] != "A" {
 		t.Fatalf("expected [A], got %v", artists)
+	}
+}
+
+func TestMarkLocalTracks_NormalizedTitle(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Local file has plain title; MB track has parenthetical suffix
+	files := []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Mellow Gold", Title: "Loser", TrackNumber: 1, ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	tracks := []TrackRecord{
+		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser (radio edit)", Position: 1},
+		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Pay No Mind", Position: 2},
+	}
+	for _, tr := range tracks {
+		if err := db.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	if err := db.MarkLocalTracks("Beck"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	got, err := db.Tracks("Beck", "Mellow Gold")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+
+	localByTitle := make(map[string]bool)
+	for _, tr := range got {
+		localByTitle[tr.Title] = tr.Local
+	}
+
+	if !localByTitle["Loser (radio edit)"] {
+		t.Error("expected 'Loser (radio edit)' to match local 'Loser' via normalized title")
+	}
+	if localByTitle["Pay No Mind"] {
+		t.Error("expected 'Pay No Mind' to NOT be local")
+	}
+}
+
+func TestMarkLocalTracks_NormalizedAlbum(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Local file has "Away From The Sun"; MB has "Away from the Sun"
+	files := []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "3 Doors Down", Album: "Away From The Sun", Title: "When I'm Gone", TrackNumber: 1, ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	tracks := []TrackRecord{
+		{ArtistName: "3 Doors Down", AlbumTitle: "Away from the Sun", Title: "When I'm Gone", Position: 1},
+	}
+	for _, tr := range tracks {
+		if err := db.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	got, err := db.Tracks("3 Doors Down", "Away from the Sun")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if len(got) != 1 || !got[0].Local {
+		t.Error("expected track to be local despite album casing difference")
+	}
+}
+
+func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Local file on album "Greatest Hits"; MB track on album "Mellow Gold"
+	files := []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Greatest Hits", Title: "Loser", TrackNumber: 1, ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	tracks := []TrackRecord{
+		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1},
+		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Pay No Mind", Position: 2},
+	}
+	for _, tr := range tracks {
+		if err := db.UpsertTrack(tr); err != nil {
+			t.Fatalf("UpsertTrack: %v", err)
+		}
+	}
+
+	if err := db.MarkLocalTracks("Beck"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	got, err := db.Tracks("Beck", "Mellow Gold")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+
+	localByTitle := make(map[string]bool)
+	for _, tr := range got {
+		localByTitle[tr.Title] = tr.Local
+	}
+
+	if !localByTitle["Loser"] {
+		t.Error("expected 'Loser' to match cross-album via tier 2 (title-only)")
+	}
+	if localByTitle["Pay No Mind"] {
+		t.Error("expected 'Pay No Mind' to NOT be local")
 	}
 }

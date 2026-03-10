@@ -168,6 +168,32 @@ func (d *DB) migrate() error {
 		version = 3
 	}
 
+	// Version 3 → 4: add monitor status to artists
+	if version < 4 {
+		if err := d.addColumnIfMissing("artists", "monitor", "TEXT NOT NULL DEFAULT 'sometimes'"); err != nil {
+			return err
+		}
+		version = 4
+	}
+
+	// Version 4 → 5: add normalized title/album columns for fuzzy matching
+	if version < 5 {
+		for _, stmt := range []struct{ table, col string }{
+			{"files", "title_norm"},
+			{"files", "album_norm"},
+			{"tracks", "title_norm"},
+			{"tracks", "album_norm"},
+		} {
+			if err := d.addColumnIfMissing(stmt.table, stmt.col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+		}
+		if err := d.backfillNorm(); err != nil {
+			return err
+		}
+		version = 5
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -219,11 +245,71 @@ func (d *DB) dropAlbumsLocalColumn() error {
 	return err
 }
 
+func (d *DB) backfillNorm() error {
+	// Backfill files
+	rows, err := d.db.Query("SELECT path, title, album FROM files")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+
+	type fileNorm struct {
+		path, titleNorm, albumNorm string
+	}
+	var fileUpdates []fileNorm
+	for rows.Next() {
+		var path, title, album string
+		if err := rows.Scan(&path, &title, &album); err != nil {
+			return err
+		}
+		fileUpdates = append(fileUpdates, fileNorm{path, Normalize(title), Normalize(album)})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range fileUpdates {
+		if _, err := d.db.Exec("UPDATE files SET title_norm = ?, album_norm = ? WHERE path = ?",
+			u.titleNorm, u.albumNorm, u.path); err != nil {
+			return err
+		}
+	}
+
+	// Backfill tracks
+	trows, err := d.db.Query("SELECT artist_name, album_title, title FROM tracks")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = trows.Close() }()
+
+	type trackNorm struct {
+		artist, album, title, titleNorm, albumNorm string
+	}
+	var trackUpdates []trackNorm
+	for trows.Next() {
+		var artist, album, title string
+		if err := trows.Scan(&artist, &album, &title); err != nil {
+			return err
+		}
+		trackUpdates = append(trackUpdates, trackNorm{artist, album, title, Normalize(title), Normalize(album)})
+	}
+	if err := trows.Err(); err != nil {
+		return err
+	}
+	for _, u := range trackUpdates {
+		if _, err := d.db.Exec("UPDATE tracks SET title_norm = ?, album_norm = ? WHERE artist_name = ? AND album_title = ? AND title = ?",
+			u.titleNorm, u.albumNorm, u.artist, u.album, u.title); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 // UpsertFile inserts or updates a file record.
 func (d *DB) UpsertFile(f FileRecord) error {
 	const q = `
-	INSERT INTO files (path, size, mod_time, artist, album, title, track_number, scanned_at)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, mod_time, artist, album, title, track_number, scanned_at, title_norm, album_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
 		size         = excluded.size,
 		mod_time     = excluded.mod_time,
@@ -231,11 +317,14 @@ func (d *DB) UpsertFile(f FileRecord) error {
 		album        = excluded.album,
 		title        = excluded.title,
 		track_number = excluded.track_number,
-		scanned_at   = excluded.scanned_at
+		scanned_at   = excluded.scanned_at,
+		title_norm   = excluded.title_norm,
+		album_norm   = excluded.album_norm
 	`
 	_, err := d.db.Exec(q,
 		f.Path, f.Size, f.ModTime.Format(time.RFC3339),
 		f.Artist, f.Album, f.Title, f.TrackNumber, f.ScannedAt.Format(time.RFC3339),
+		Normalize(f.Title), Normalize(f.Album),
 	)
 	return err
 }
@@ -271,12 +360,13 @@ func (d *DB) FileChanged(path string, size int64, modTime time.Time) (bool, erro
 // ArtistSummary holds aggregate info for one artist.
 type ArtistSummary struct {
 	Name        string
-	AlbumCount  int    // local albums (from files)
-	NewestAlbum string // kept for sort mode
-	TrackCount  int    // local tracks (from files)
-	TotalAlbums int    // catalog albums (from albums table, 0 if not synced)
-	TotalTracks int    // catalog tracks (from tracks table, 0 if not synced)
-	Synced      bool   // artist has MBID in artists table
+	AlbumCount  int           // local albums (from files)
+	NewestAlbum string        // kept for sort mode
+	TrackCount  int           // local tracks (from files)
+	TotalAlbums int           // catalog albums (from albums table, 0 if not synced)
+	TotalTracks int           // catalog tracks (from tracks table, 0 if not synced)
+	Synced      bool          // artist has MBID in artists table
+	Monitor     MonitorStatus // monitor/sometimes/ignore
 }
 
 // ArtistSummaries returns all artists with album counts and newest album name.
@@ -288,7 +378,8 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	       COUNT(*) AS track_cnt,
 	       COALESCE(a.mbid, '') AS mbid,
 	       COALESCE(al.total_albums, 0) AS total_albums,
-	       COALESCE(tr.total_tracks, 0) AS total_tracks
+	       COALESCE(tr.total_tracks, 0) AS total_tracks,
+	       COALESCE(a.monitor, 'sometimes') AS monitor
 	FROM files f
 	LEFT JOIN artists a ON a.name = f.artist
 	LEFT JOIN (
@@ -312,12 +403,13 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	var summaries []ArtistSummary
 	for rows.Next() {
 		var s ArtistSummary
-		var mbid string
+		var mbid, monitor string
 		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
-			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks); err != nil {
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor); err != nil {
 			return nil, err
 		}
 		s.Synced = mbid != ""
+		s.Monitor = MonitorStatus(monitor)
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()
@@ -478,16 +570,46 @@ func (d *DB) UpsertTrack(t TrackRecord) error {
 		local = 1
 	}
 	const q = `
-	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local, title_norm, album_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(artist_name, album_title, title) DO UPDATE SET
-		position  = excluded.position,
-		mbid      = excluded.mbid,
-		length_ms = excluded.length_ms,
-		local     = excluded.local
+		position   = excluded.position,
+		mbid       = excluded.mbid,
+		length_ms  = excluded.length_ms,
+		local      = excluded.local,
+		title_norm = excluded.title_norm,
+		album_norm = excluded.album_norm
 	`
-	_, err := d.db.Exec(q, t.ArtistName, t.AlbumTitle, t.Title, t.Position, t.MBID, t.LengthMS, local)
+	_, err := d.db.Exec(q, t.ArtistName, t.AlbumTitle, t.Title, t.Position, t.MBID, t.LengthMS, local,
+		Normalize(t.Title), Normalize(t.AlbumTitle))
 	return err
+}
+
+// KnownAlbumMBIDs returns the set of album MBIDs for an artist that already
+// have tracks in the database. This allows callers to skip fetching track
+// listings from MusicBrainz for albums we already know about.
+func (d *DB) KnownAlbumMBIDs(artistName string) (map[string]struct{}, error) {
+	const q = `
+	SELECT DISTINCT a.mbid
+	FROM albums a
+	JOIN tracks t ON t.artist_name = a.artist_name AND t.album_title = a.title
+	WHERE a.artist_name = ? AND a.mbid != ''
+	`
+	rows, err := d.db.Query(q, artistName)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	known := make(map[string]struct{})
+	for rows.Next() {
+		var mbid string
+		if err := rows.Scan(&mbid); err != nil {
+			return nil, err
+		}
+		known[mbid] = struct{}{}
+	}
+	return known, rows.Err()
 }
 
 // Tracks returns all tracks for an album, ordered by position.
@@ -517,19 +639,69 @@ func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
 	return tracks, rows.Err()
 }
 
+// MonitorStatus represents how frequently to check an artist for new releases.
+type MonitorStatus string
+
+const (
+	MonitorAlways    MonitorStatus = "monitor"
+	MonitorSometimes MonitorStatus = "sometimes"
+	MonitorIgnore    MonitorStatus = "ignore"
+)
+
+// MonitorStatuses is the ordered list of valid monitor statuses.
+var MonitorStatuses = []MonitorStatus{MonitorAlways, MonitorSometimes, MonitorIgnore}
+
+// MonitorLabels maps each status to its display label.
+var MonitorLabels = map[MonitorStatus]string{
+	MonitorAlways:    "Monitor — always check",
+	MonitorSometimes: "Sometimes — check occasionally",
+	MonitorIgnore:    "Ignore — never check",
+}
+
+// GetMonitorStatus returns the monitor status for an artist, defaulting to "sometimes".
+func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
+	var status string
+	err := d.db.QueryRow("SELECT monitor FROM artists WHERE name = ?", artist).Scan(&status)
+	if err == sql.ErrNoRows {
+		return MonitorSometimes, nil
+	}
+	if err != nil {
+		return MonitorSometimes, err
+	}
+	return MonitorStatus(status), nil
+}
+
+// SetMonitorStatus sets the monitor status for an artist, upserting the artists row.
+func (d *DB) SetMonitorStatus(artist string, status MonitorStatus) error {
+	const q = `
+	INSERT INTO artists (name, monitor) VALUES (?, ?)
+	ON CONFLICT(name) DO UPDATE SET monitor = excluded.monitor
+	`
+	_, err := d.db.Exec(q, artist, string(status))
+	return err
+}
+
 // MarkLocalTracks cross-references the files table to set local flag on tracks.
-// Matches by artist + album + (case-insensitive title OR track position).
+// Uses normalized titles/albums for fuzzy matching, with two-tier logic:
+// Tier 1: same artist + normalized album + (normalized title OR track position)
+// Tier 2: same artist + normalized title (cross-album fallback)
 func (d *DB) MarkLocalTracks(artistName string) error {
 	const q = `
 	UPDATE tracks SET local = (
 		EXISTS (
 			SELECT 1 FROM files
 			WHERE files.artist = tracks.artist_name
-			  AND files.album  = tracks.album_title
+			  AND files.album_norm = tracks.album_norm
 			  AND (
-			    LOWER(files.title) = LOWER(tracks.title)
+			    files.title_norm = tracks.title_norm
 			    OR (files.track_number > 0 AND files.track_number = tracks.position)
 			  )
+		)
+		OR EXISTS (
+			SELECT 1 FROM files
+			WHERE files.artist = tracks.artist_name
+			  AND files.title_norm != ''
+			  AND files.title_norm = tracks.title_norm
 		)
 	)
 	WHERE artist_name = ?

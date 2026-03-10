@@ -188,15 +188,18 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 		phase: fmt.Sprintf("Found %d albums", len(rgs)),
 	}
 
-	// Step 3: For each release group, upsert album and fetch tracks
-	for i, rg := range rgs {
-		ch <- syncProgressMsg{
-			phase:   "Fetching tracks",
-			album:   rg.Title,
-			current: i + 1,
-			total:   len(rgs),
-		}
+	// Build set of albums we already have tracks for so we can skip
+	// fetching them from MusicBrainz again.
+	knownMBIDs, err := db.KnownAlbumMBIDs(artist)
+	if err != nil {
+		ch <- syncDoneMsg{err: fmt.Errorf("known albums: %w", err)}
+		return
+	}
 
+	// Step 3: For each release group, upsert album and fetch tracks
+	fetched := 0
+	for _, rg := range rgs {
+		// Always upsert the album metadata (cheap, keeps it fresh).
 		if err := db.UpsertAlbum(state.AlbumRecord{
 			ArtistName:     artist,
 			Title:          rg.Title,
@@ -207,6 +210,19 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 		}); err != nil {
 			ch <- syncDoneMsg{err: fmt.Errorf("upsert album: %w", err)}
 			return
+		}
+
+		// Skip the expensive BrowseReleases call if we already have tracks.
+		if _, known := knownMBIDs[rg.ID]; known {
+			continue
+		}
+
+		fetched++
+		ch <- syncProgressMsg{
+			phase:   "Fetching tracks",
+			album:   rg.Title,
+			current: fetched,
+			total:   len(rgs) - len(knownMBIDs),
 		}
 
 		relResult, err := mb.BrowseReleases(ctx, rg.ID, "recordings", 1, 0)
@@ -233,6 +249,8 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 			}
 		}
 	}
+
+	_ = i // suppress unused warning from range variable
 
 	// Step 4: Match local tracks
 	ch <- syncProgressMsg{phase: "Matching local library..."}

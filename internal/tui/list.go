@@ -21,6 +21,7 @@ type artistItem struct {
 	totalAlbums int    // catalog (0 = not synced)
 	totalTracks int    // catalog (0 = not synced)
 	synced      bool
+	monitor     state.MonitorStatus
 }
 
 func (i artistItem) FilterValue() string { return i.name }
@@ -46,10 +47,19 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	// Sync indicator: 2 chars
-	syncInd := "  "
-	if ai.synced {
-		syncInd = localStyle.Render("· ")
+	// Status indicator: 2 chars (monitor=▲, ignore=—, sometimes=sync dot or blank)
+	var statusInd string
+	switch ai.monitor {
+	case state.MonitorAlways:
+		statusInd = localStyle.Render("▲ ")
+	case state.MonitorIgnore:
+		statusInd = mutedStyle.Render("— ")
+	default:
+		if ai.synced {
+			statusInd = localStyle.Render("· ")
+		} else {
+			statusInd = "  "
+		}
 	}
 
 	const numWidth = 7 // fits "xxx/yyy"
@@ -93,7 +103,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 	name += strings.Repeat(" ", max(0, nameCol-nameWidth))
 
-	line := cursor + syncInd + nameStyle.Render(name) + " " + mutedStyle.Render(trackStr) + "  " + mutedStyle.Render(albumStr)
+	line := cursor + statusInd + nameStyle.Render(name) + " " + mutedStyle.Render(trackStr) + "  " + mutedStyle.Render(albumStr)
 
 	_, _ = fmt.Fprint(w, line)
 }
@@ -116,6 +126,7 @@ func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height i
 			totalAlbums: s.TotalAlbums,
 			totalTracks: s.TotalTracks,
 			synced:      s.Synced,
+			monitor:     s.Monitor,
 		}
 	}
 
@@ -158,6 +169,10 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return startSyncMsg{artist: item.name} }
 			}
+		case "s":
+			if item, ok := m.list.SelectedItem().(artistItem); ok {
+				return m, func() tea.Msg { return showStatusMsg{artist: item.name, current: item.monitor} }
+			}
 		case "o":
 			return m, func() tea.Msg { return showSortMsg{} }
 		case "q", "ctrl+c":
@@ -188,6 +203,7 @@ func (m *listModel) refreshItems() {
 			totalAlbums: s.TotalAlbums,
 			totalTracks: s.TotalTracks,
 			synced:      s.Synced,
+			monitor:     s.Monitor,
 		}
 	}
 	m.allItems = items
@@ -209,9 +225,13 @@ func (m *listModel) applySort() {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · o: sort · u: sync · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · enter: detail · q: quit"))
 	return b.String()
 }
 
 type showDetailMsg struct{ artist string }
 type showSortMsg struct{}
+type showStatusMsg struct {
+	artist  string
+	current state.MonitorStatus
+}
