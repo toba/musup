@@ -43,8 +43,8 @@ type Model struct {
 	prevState   viewState // view behind the sync modal
 }
 
-func New(db *state.DB, root string) Model {
-	mb := musicbrainz.New("musup", "0.1.0", "https://github.com/toba/musup")
+func New(db *state.DB, root, version string) Model {
+	mb := musicbrainz.New("musup", version, "https://github.com/toba/musup")
 	return Model{
 		db:         db,
 		mb:         mb,

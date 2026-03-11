@@ -40,7 +40,7 @@ var rootCmd = &cobra.Command{
 		}
 		defer func() { _ = db.Close() }()
 
-		p := tea.NewProgram(tui.New(db, root), tea.WithAltScreen())
+		p := tea.NewProgram(tui.New(db, root, ver), tea.WithAltScreen())
 		if _, err := p.Run(); err != nil {
 			return err
 		}

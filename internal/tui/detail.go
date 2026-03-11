@@ -89,19 +89,7 @@ func (m detailModel) itemCount() int {
 }
 
 func (m *detailModel) ensureVisible() {
-	viewable := m.viewableLines()
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+viewable {
-		m.offset = m.cursor - viewable + 1
-	}
-}
-
-func (m detailModel) viewableLines() int {
-	// header takes 4 lines, leave 1 for footer
-	v := max(m.height-5, 1)
-	return v
+	m.offset = ensureVisible(m.cursor, m.offset, m.height)
 }
 
 func (m detailModel) View() string {
@@ -115,7 +103,7 @@ func (m detailModel) View() string {
 	}
 	albumCount := mutedStyle.Render(fmt.Sprintf("%d %s", count, noun))
 	b.WriteString(header + "  " + albumCount + "\n")
-	b.WriteString(subtleStyle.Render(strings.Repeat("─", 40)) + "\n\n")
+	b.WriteString(headerSep + "\n\n")
 
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(m.err.Error()))
@@ -140,7 +128,7 @@ func (m detailModel) View() string {
 }
 
 func (m detailModel) renderCatalog(b *strings.Builder) {
-	viewable := m.viewableLines()
+	viewable := viewableLines(m.height)
 	end := min(m.offset+viewable, len(m.catalogAlbums))
 
 	// Compute max title display width for visible range
@@ -192,7 +180,7 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 }
 
 func (m detailModel) renderLocalAlbums(b *strings.Builder) {
-	viewable := m.viewableLines()
+	viewable := viewableLines(m.height)
 	end := min(m.offset+viewable, len(m.albums))
 
 	for i := m.offset; i < end; i++ {

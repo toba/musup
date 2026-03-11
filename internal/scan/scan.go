@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dhowden/tag"
 	"github.com/toba/musup/internal/state"
+	"golang.org/x/sync/errgroup"
 )
 
 var supportedExts = map[string]struct{}{
@@ -19,6 +21,15 @@ var supportedExts = map[string]struct{}{
 	".m4a":  {},
 	".mp4":  {},
 	".aac":  {},
+	".wma":  {},
+}
+
+// changedFile holds info for a file that needs tag reading.
+type changedFile struct {
+	absPath string
+	relPath string
+	size    int64
+	modTime time.Time
 }
 
 // Scan walks root for music files, reads metadata, and updates db.
@@ -29,6 +40,7 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 	}
 
 	livePaths := make(map[string]struct{})
+	var changed []changedFile
 
 	err = filepath.WalkDir(root, func(absPath string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -57,29 +69,71 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 			return nil //nolint:nilerr // skip files we can't stat
 		}
 
-		changed, err := db.FileChanged(relPath, info.Size(), info.ModTime())
+		needsScan, err := db.FileChanged(relPath, info.Size(), info.ModTime())
 		if err != nil {
 			return fmt.Errorf("check changed %s: %w", relPath, err)
 		}
-		if !changed {
+		if !needsScan {
 			return nil
 		}
 
-		artist, album, title, trackNum := readTags(absPath)
-
-		return db.UpsertFile(state.FileRecord{
-			Path:        relPath,
-			Size:        info.Size(),
-			ModTime:     info.ModTime(),
-			Artist:      artist,
-			Album:       album,
-			Title:       title,
-			TrackNumber: trackNum,
-			ScannedAt:   time.Now(),
+		changed = append(changed, changedFile{
+			absPath: absPath,
+			relPath: relPath,
+			size:    info.Size(),
+			modTime: info.ModTime(),
 		})
+		return nil
 	})
 	if err != nil {
 		return err
+	}
+
+	// Read tags in parallel, then upsert sequentially (single DB connection).
+	type tagResult struct {
+		cf      changedFile
+		artist  string
+		album   string
+		title   string
+		trackNo int
+	}
+
+	results := make([]tagResult, len(changed))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(8)
+	var mu sync.Mutex
+	idx := 0
+
+	for _, cf := range changed {
+		g.Go(func() error {
+			if gctx.Err() != nil {
+				return gctx.Err()
+			}
+			artist, album, title, trackNo := readTags(cf.absPath)
+			mu.Lock()
+			results[idx] = tagResult{cf: cf, artist: artist, album: album, title: title, trackNo: trackNo}
+			idx++
+			mu.Unlock()
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	for _, r := range results[:idx] {
+		if err := db.UpsertFile(state.FileRecord{
+			Path:        r.cf.relPath,
+			Size:        r.cf.size,
+			ModTime:     r.cf.modTime,
+			Artist:      r.artist,
+			Album:       r.album,
+			Title:       r.title,
+			TrackNumber: r.trackNo,
+			ScannedAt:   time.Now(),
+		}); err != nil {
+			return err
+		}
 	}
 
 	_, err = db.RemoveStaleFiles(livePaths)
@@ -91,24 +145,29 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 }
 
 func readTags(path string) (artist, album, title string, trackNumber int) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", "", "", 0
-	}
-	defer func() { _ = f.Close() }()
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext == ".wma" {
+		artist, album, title, trackNumber = readASF(path)
+	} else {
+		f, err := os.Open(path)
+		if err != nil {
+			return "", "", "", 0
+		}
+		defer func() { _ = f.Close() }()
 
-	m, err := tag.ReadFrom(f)
-	if err != nil {
-		return "", "", "", 0
-	}
+		m, err := tag.ReadFrom(f)
+		if err != nil {
+			return "", "", "", 0
+		}
 
-	artist = m.AlbumArtist()
-	if artist == "" {
-		artist = m.Artist()
+		artist = m.AlbumArtist()
+		if artist == "" {
+			artist = m.Artist()
+		}
+		title = m.Title()
+		trackNumber, _ = m.Track()
+		album = m.Album()
 	}
-	title = m.Title()
-	trackNumber, _ = m.Track()
-	album = m.Album()
 
 	// Fall back to filename parsing when tags are missing title/track number.
 	// Supports patterns like "06 Somebody's Heaven.flac" or "06. Title.flac".

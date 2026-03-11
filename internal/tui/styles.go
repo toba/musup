@@ -31,6 +31,9 @@ var (
 
 	localStyle = lipgloss.NewStyle().
 			Foreground(colorLocal)
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(colorSubtle)
 )
 
 // placeOverlay centers fg on top of bg, dimming the background.
@@ -44,7 +47,7 @@ func placeOverlay(width, height int, fg, bg string) string {
 	}
 
 	// Dim the background
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555"))
+
 	for i, line := range bgLines {
 		bgLines[i] = dimStyle.Render(stripAnsi(line))
 	}
@@ -82,7 +85,6 @@ func overlayLine(bgLine, fgLine string, startX, maxWidth int) string {
 		suffix = string(bgRunes[suffixStart:])
 	}
 
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#555"))
 	return dimStyle.Render(prefix) + fgLine + dimStyle.Render(suffix)
 }
 

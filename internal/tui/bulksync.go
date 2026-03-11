@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
 )
@@ -41,15 +40,8 @@ type bulkSyncModel struct {
 }
 
 func newBulkSyncModel(db *state.DB, mb *musicbrainz.Client, artists []string) bulkSyncModel {
-	s := spinner.New()
-	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    80 * time.Millisecond,
-	}
-	s.Style = lipgloss.NewStyle().Foreground(colorAccent)
-
 	m := bulkSyncModel{
-		spinner: s,
+		spinner: newSpinner(),
 		db:      db,
 		mb:      mb,
 		artists: artists,
@@ -117,11 +109,7 @@ func (m bulkSyncModel) Update(msg tea.Msg) (bulkSyncModel, tea.Cmd) {
 }
 
 func (m bulkSyncModel) View(width, height int, bg string) string {
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorAccent).
-		Padding(1, 2).
-		Width(50)
+	modal := modalStyle(50)
 
 	var b strings.Builder
 

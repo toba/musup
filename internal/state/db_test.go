@@ -835,8 +835,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 5 {
-		t.Fatalf("expected user_version 5, got %d", version)
+	if version != 6 {
+		t.Fatalf("expected user_version 6, got %d", version)
 	}
 }
 
@@ -863,8 +863,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 5 {
-		t.Fatalf("expected user_version 5, got %d", version)
+	if version != 6 {
+		t.Fatalf("expected user_version 6, got %d", version)
 	}
 }
 
@@ -1094,5 +1094,270 @@ func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 	}
 	if localByTitle["Pay No Mind"] {
 		t.Error("expected 'Pay No Mind' to NOT be local")
+	}
+}
+
+func TestGetSetMonitorStatus(t *testing.T) {
+	db := openTestDB(t)
+
+	// Unknown artist defaults to MonitorAlways.
+	status, err := db.GetMonitorStatus("Unknown Artist")
+	if err != nil {
+		t.Fatalf("GetMonitorStatus unknown: %v", err)
+	}
+	if status != MonitorAlways {
+		t.Fatalf("expected MonitorAlways for unknown artist, got %q", status)
+	}
+
+	// Round-trip each of the 3 statuses.
+	cases := []MonitorStatus{MonitorAlways, MonitorSometimes, MonitorIgnore}
+	for _, want := range cases {
+		if err := db.SetMonitorStatus("Test Artist", want); err != nil {
+			t.Fatalf("SetMonitorStatus %q: %v", want, err)
+		}
+		got, err := db.GetMonitorStatus("Test Artist")
+		if err != nil {
+			t.Fatalf("GetMonitorStatus after Set %q: %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("expected %q, got %q", want, got)
+		}
+	}
+
+	// Calling SetMonitorStatus twice on the same artist updates (not duplicates).
+	if err := db.SetMonitorStatus("Test Artist", MonitorIgnore); err != nil {
+		t.Fatalf("SetMonitorStatus second call: %v", err)
+	}
+	if err := db.SetMonitorStatus("Test Artist", MonitorSometimes); err != nil {
+		t.Fatalf("SetMonitorStatus third call: %v", err)
+	}
+	got, err := db.GetMonitorStatus("Test Artist")
+	if err != nil {
+		t.Fatalf("GetMonitorStatus after double set: %v", err)
+	}
+	if got != MonitorSometimes {
+		t.Fatalf("expected MonitorSometimes after update, got %q", got)
+	}
+
+	// Verify no duplicate rows exist.
+	var rowCount int
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists WHERE name = 'Test Artist'").Scan(&rowCount); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rowCount != 1 {
+		t.Fatalf("expected 1 row, got %d", rowCount)
+	}
+}
+
+func TestFileChanged_EmptyTitle(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Insert a file with empty title (tags not extracted).
+	rec := FileRecord{
+		Path:      "artist/album/song.flac",
+		Size:      1000,
+		ModTime:   now,
+		Artist:    "Test",
+		Album:     "Album",
+		Title:     "", // empty — signals tags were not read
+		ScannedAt: now,
+	}
+	if err := db.UpsertFile(rec); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Same size and mtime but title is empty — should trigger re-scan.
+	changed, err := db.FileChanged(rec.Path, rec.Size, rec.ModTime)
+	if err != nil {
+		t.Fatalf("FileChanged: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected FileChanged == true when stored title is empty")
+	}
+}
+
+func TestFileChanged_SizeOnly(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	rec := FileRecord{
+		Path:      "artist/album/song.flac",
+		Size:      1000,
+		ModTime:   now,
+		Artist:    "Test",
+		Album:     "Album",
+		Title:     "Song",
+		ScannedAt: now,
+	}
+	if err := db.UpsertFile(rec); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Same mtime, different size — should be changed.
+	changed, err := db.FileChanged(rec.Path, rec.Size+1, rec.ModTime)
+	if err != nil {
+		t.Fatalf("FileChanged: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected FileChanged == true when size differs")
+	}
+}
+
+func TestAlbums_SecondaryTypes(t *testing.T) {
+	db := openTestDB(t)
+
+	album := AlbumRecord{
+		ArtistName:     "Radiohead",
+		Title:          "OK Computer OKNOTOK",
+		MBID:           "aaa",
+		ReleaseDate:    "2017-06-23",
+		PrimaryType:    "Album",
+		SecondaryTypes: "Compilation",
+	}
+	if err := db.UpsertAlbum(album); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+
+	got, err := db.Albums("Radiohead")
+	if err != nil {
+		t.Fatalf("Albums: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 album, got %d", len(got))
+	}
+	if got[0].SecondaryTypes != "Compilation" {
+		t.Fatalf("expected SecondaryTypes %q, got %q", "Compilation", got[0].SecondaryTypes)
+	}
+}
+
+func TestTracks_LocalRoundTrip(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Insert local file so MarkLocalTracks can match it.
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now,
+		Artist: "Radiohead", Album: "OK Computer", Title: "Airbag",
+		TrackNumber: 1, ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Insert track with Local=true explicitly.
+	if err := db.UpsertTrack(TrackRecord{
+		ArtistName: "Radiohead", AlbumTitle: "OK Computer",
+		Title: "Airbag", Position: 1, Local: true,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	if err := db.MarkLocalTracks("Radiohead"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	tracks, err := db.Tracks("Radiohead", "OK Computer")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if len(tracks) != 1 {
+		t.Fatalf("expected 1 track, got %d", len(tracks))
+	}
+	if !tracks[0].Local {
+		t.Fatal("expected Local == true for matched track")
+	}
+}
+
+func TestUpsertArtist_UpdateFields(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	first := ArtistRecord{
+		Name:          "Radiohead",
+		MBID:          "mbid-v1",
+		LastCheckedAt: now,
+		LatestRelease: "Pablo Honey",
+		LatestDate:    "1993-02-22",
+	}
+	if err := db.UpsertArtist(first); err != nil {
+		t.Fatalf("UpsertArtist first: %v", err)
+	}
+
+	later := now.Add(time.Hour)
+	second := ArtistRecord{
+		Name:          "Radiohead",
+		MBID:          "mbid-v2",
+		LastCheckedAt: later,
+		LatestRelease: "A Moon Shaped Pool",
+		LatestDate:    "2016-05-08",
+	}
+	if err := db.UpsertArtist(second); err != nil {
+		t.Fatalf("UpsertArtist second: %v", err)
+	}
+
+	got, err := db.Artist("Radiohead")
+	if err != nil {
+		t.Fatalf("Artist: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected artist record, got nil")
+	}
+	if got.MBID != "mbid-v2" {
+		t.Fatalf("expected MBID %q, got %q", "mbid-v2", got.MBID)
+	}
+	if got.LatestRelease != "A Moon Shaped Pool" {
+		t.Fatalf("expected LatestRelease %q, got %q", "A Moon Shaped Pool", got.LatestRelease)
+	}
+	if got.LatestDate != "2016-05-08" {
+		t.Fatalf("expected LatestDate %q, got %q", "2016-05-08", got.LatestDate)
+	}
+}
+
+func TestArtistSummaries_MonitorField(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Seed a file so the artist appears in ArtistSummaries.
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now,
+		Artist: "Radiohead", Album: "OK Computer", ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Default (no artists row) should be MonitorAlways.
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries (default): %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].Monitor != MonitorAlways {
+		t.Fatalf("expected MonitorAlways by default, got %q", summaries[0].Monitor)
+	}
+
+	// Set to Ignore and verify.
+	if err := db.SetMonitorStatus("Radiohead", MonitorIgnore); err != nil {
+		t.Fatalf("SetMonitorStatus: %v", err)
+	}
+	summaries, err = db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries (after set): %v", err)
+	}
+	if summaries[0].Monitor != MonitorIgnore {
+		t.Fatalf("expected MonitorIgnore, got %q", summaries[0].Monitor)
+	}
+
+	// Set to Sometimes and verify.
+	if err := db.SetMonitorStatus("Radiohead", MonitorSometimes); err != nil {
+		t.Fatalf("SetMonitorStatus: %v", err)
+	}
+	summaries, err = db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries (after sometimes): %v", err)
+	}
+	if summaries[0].Monitor != MonitorSometimes {
+		t.Fatalf("expected MonitorSometimes, got %q", summaries[0].Monitor)
 	}
 }

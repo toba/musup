@@ -18,15 +18,17 @@ type albumDetailModel struct {
 	cursor     int
 	height     int
 	offset     int
+	err        error
 }
 
 func newAlbumDetailModel(db *state.DB, artist, albumTitle, year string) albumDetailModel {
-	tracks, _ := db.Tracks(artist, albumTitle)
+	tracks, err := db.Tracks(artist, albumTitle)
 	return albumDetailModel{
 		artist:     artist,
 		albumTitle: albumTitle,
 		year:       year,
 		tracks:     tracks,
+		err:        err,
 	}
 }
 
@@ -56,18 +58,7 @@ func (m albumDetailModel) Update(msg tea.Msg) (albumDetailModel, tea.Cmd) {
 }
 
 func (m *albumDetailModel) ensureVisible() {
-	viewable := m.viewableLines()
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+viewable {
-		m.offset = m.cursor - viewable + 1
-	}
-}
-
-func (m albumDetailModel) viewableLines() int {
-	v := max(m.height-5, 1)
-	return v
+	m.offset = ensureVisible(m.cursor, m.offset, m.height)
 }
 
 func (m albumDetailModel) View() string {
@@ -85,7 +76,13 @@ func (m albumDetailModel) View() string {
 	header := titleStyle.Render(m.albumTitle) + mutedStyle.Render(yearStr) +
 		"  " + mutedStyle.Render(fmt.Sprintf("%d %s", len(m.tracks), noun))
 	b.WriteString(header + "\n")
-	b.WriteString(subtleStyle.Render(strings.Repeat("─", 40)) + "\n\n")
+	b.WriteString(headerSep + "\n\n")
+
+	if m.err != nil {
+		b.WriteString(errorStyle.Render(m.err.Error()))
+		b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit"))
+		return b.String()
+	}
 
 	if len(m.tracks) == 0 {
 		b.WriteString(mutedStyle.Render("No tracks found."))
@@ -95,7 +92,7 @@ func (m albumDetailModel) View() string {
 
 	// Compute max track name display width
 	maxNameWidth := 0
-	viewable := m.viewableLines()
+	viewable := viewableLines(m.height)
 	end := min(m.offset+viewable, len(m.tracks))
 	for i := m.offset; i < end; i++ {
 		w := runewidth.StringWidth(m.tracks[i].Title)

@@ -13,6 +13,7 @@ type statusModel struct {
 	current state.MonitorStatus
 	artist  string
 	db      *state.DB
+	err     error
 }
 
 func newStatusModel(db *state.DB, artist string, current state.MonitorStatus) statusModel {
@@ -35,7 +36,10 @@ func (m statusModel) Update(msg tea.Msg) (statusModel, tea.Cmd) {
 			m.cursor = (m.cursor - 1 + len(state.MonitorStatuses)) % len(state.MonitorStatuses)
 		case "enter":
 			chosen := state.MonitorStatuses[m.cursor]
-			_ = m.db.SetMonitorStatus(m.artist, chosen)
+			if err := m.db.SetMonitorStatus(m.artist, chosen); err != nil {
+				m.err = err
+				return m, nil
+			}
 			return m, func() tea.Msg { return statusChosenMsg{artist: m.artist, status: chosen} }
 		case "esc":
 			return m, func() tea.Msg { return statusCancelMsg{} }
@@ -45,11 +49,7 @@ func (m statusModel) Update(msg tea.Msg) (statusModel, tea.Cmd) {
 }
 
 func (m statusModel) View(width, height int, bg string) string {
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorAccent).
-		Padding(1, 2).
-		Width(40)
+	modal := modalStyle(40)
 
 	var s string
 	s += titleStyle.Render("Monitor status") + "\n"
@@ -65,6 +65,9 @@ func (m statusModel) View(width, height int, bg string) string {
 		sb.WriteString(cursor + style.Render(state.MonitorLabels[status]) + "\n")
 	}
 	s += sb.String()
+	if m.err != nil {
+		s += "\n" + errorStyle.Render(m.err.Error())
+	}
 
 	rendered := modal.Render(s)
 	return placeOverlay(width, height, rendered, bg)

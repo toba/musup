@@ -52,11 +52,7 @@ func (m sortModel) Update(msg tea.Msg) (sortModel, tea.Cmd) {
 }
 
 func (m sortModel) View(width, height int, bg string) string {
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorAccent).
-		Padding(1, 2).
-		Width(40)
+	modal := modalStyle(40)
 
 	var s string
 	s += titleStyle.Render("Sort by") + "\n\n"

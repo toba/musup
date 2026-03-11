@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
 )
@@ -55,17 +53,10 @@ func newSyncModel(db *state.DB, mb *musicbrainz.Client, artist string) syncModel
 }
 
 func newSyncModelWithContext(ctx context.Context, db *state.DB, mb *musicbrainz.Client, artist string) syncModel {
-	s := spinner.New()
-	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    80 * time.Millisecond,
-	}
-	s.Style = lipgloss.NewStyle().Foreground(colorAccent)
-
 	ch := make(chan tea.Msg, 1)
 
 	m := syncModel{
-		spinner: s,
+		spinner: newSpinner(),
 		artist:  artist,
 		mb:      mb,
 		db:      db,
@@ -125,11 +116,7 @@ func (m syncModel) Update(msg tea.Msg) (syncModel, tea.Cmd) {
 }
 
 func (m syncModel) View(width, height int, bg string) string {
-	modal := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(colorAccent).
-		Padding(1, 2).
-		Width(44)
+	modal := modalStyle(44)
 
 	var b strings.Builder
 
@@ -168,13 +155,13 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	}
 	ch <- syncProgressMsg{phase: "Searching MusicBrainz..."}
 
-	result, err := mb.SearchArtists(ctx, artist, 5, 0)
+	result, err := mb.SearchArtists(ctx, artist, mbSearchLimit, 0)
 	if err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("search artist: %w", err)}
 		return
 	}
 
-	if len(result.Artists) == 0 || result.Artists[0].Score < 90 {
+	if len(result.Artists) == 0 || result.Artists[0].Score < mbMinMatchScore {
 		_ = db.MarkArtistNotFound(artist)
 		ch <- syncDoneMsg{err: errors.New("artist not found on MusicBrainz")}
 		return

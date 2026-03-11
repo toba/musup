@@ -116,19 +116,7 @@ type listModel struct {
 }
 
 func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height int) listModel {
-	items := make([]artistItem, len(summaries))
-	for i, s := range summaries {
-		items[i] = artistItem{
-			name:        s.Name,
-			albumCount:  s.AlbumCount,
-			newestAlbum: s.NewestAlbum,
-			trackCount:  s.TrackCount,
-			totalAlbums: s.TotalAlbums,
-			totalTracks: s.TotalTracks,
-			synced:      s.Synced,
-			monitor:     s.Monitor,
-		}
-	}
+	items := summariesToItems(summaries)
 
 	listItems := make([]list.Item, len(items))
 	for i := range items {
@@ -179,6 +167,8 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 			if len(artists) > 0 {
 				return m, func() tea.Msg { return startBulkSyncMsg{artists: artists} }
 			}
+			m.list.NewStatusMessage(subtleStyle.Render("No artists set to Monitor — use s to change status"))
+			return m, nil
 		case "s":
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return showStatusMsg{artist: item.name, current: item.monitor} }
@@ -203,20 +193,7 @@ func (m *listModel) refreshItems() {
 	if err != nil {
 		return
 	}
-	items := make([]artistItem, len(summaries))
-	for i, s := range summaries {
-		items[i] = artistItem{
-			name:        s.Name,
-			albumCount:  s.AlbumCount,
-			newestAlbum: s.NewestAlbum,
-			trackCount:  s.TrackCount,
-			totalAlbums: s.TotalAlbums,
-			totalTracks: s.TotalTracks,
-			synced:      s.Synced,
-			monitor:     s.Monitor,
-		}
-	}
-	m.allItems = items
+	m.allItems = summariesToItems(summaries)
 	m.applySort()
 }
 
@@ -235,7 +212,7 @@ func (m *listModel) applySort() {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · U: sync all · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · U: sync monitored · enter: detail · q: quit"))
 	return b.String()
 }
 

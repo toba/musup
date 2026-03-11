@@ -162,6 +162,141 @@ func TestSearchArtists_ServerError(t *testing.T) {
 	}
 }
 
+func TestBrowseReleaseGroups_NoTypeFilter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["type"]; ok {
+			t.Errorf("unexpected type param in URL: %s", r.URL.RawQuery)
+		}
+
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
+			Count:         0,
+			Offset:        0,
+			ReleaseGroups: []musicbrainz.ReleaseGroup{},
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	_, err := client.BrowseReleaseGroups(context.Background(), "abc-123", "", 25, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBrowseReleases_NoInc(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := r.URL.Query()["inc"]; ok {
+			t.Errorf("unexpected inc param in URL: %s", r.URL.RawQuery)
+		}
+
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseBrowseResult{
+			Count:    0,
+			Offset:   0,
+			Releases: []musicbrainz.Release{},
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	_, err := client.BrowseReleases(context.Background(), "rg-456", "", 25, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestBrowseReleaseGroups_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	_, err := client.BrowseReleaseGroups(context.Background(), "abc-123", "album", 25, 0)
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestBrowseReleases_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	_, err := client.BrowseReleases(context.Background(), "rg-456", "recordings", 25, 0)
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+}
+
+func TestAllReleaseGroups_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
+			Count:         0,
+			Offset:        0,
+			ReleaseGroups: []musicbrainz.ReleaseGroup{},
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	all, err := client.AllReleaseGroups(context.Background(), "abc-123", "album")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 0 {
+		t.Fatalf("expected 0 release groups, got %d", len(all))
+	}
+}
+
+func TestAllReleaseGroups_SinglePage(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		var rgs []musicbrainz.ReleaseGroup
+		for i := range 5 {
+			rgs = append(rgs, musicbrainz.ReleaseGroup{
+				ID:    fmt.Sprintf("rg-%d", i),
+				Title: fmt.Sprintf("Album %d", i),
+			})
+		}
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
+			Count:         5,
+			Offset:        0,
+			ReleaseGroups: rgs,
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	all, err := client.AllReleaseGroups(context.Background(), "abc-123", "album")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("expected 5 release groups, got %d", len(all))
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+}
+
+func TestSearchArtists_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{not valid json`))
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	_, err := client.SearchArtists(context.Background(), "Test", 25, 0)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON response")
+	}
+}
+
 func TestBrowseReleaseGroups(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/release-group" {

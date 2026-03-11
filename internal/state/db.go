@@ -2,6 +2,7 @@ package state
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -170,7 +171,7 @@ func (d *DB) migrate() error {
 
 	// Version 3 → 4: add monitor status to artists
 	if version < 4 {
-		if err := d.addColumnIfMissing("artists", "monitor", "TEXT NOT NULL DEFAULT 'sometimes'"); err != nil {
+		if err := d.addColumnIfMissing("artists", "monitor", "TEXT NOT NULL DEFAULT 'monitor'"); err != nil {
 			return err
 		}
 		version = 4
@@ -192,6 +193,14 @@ func (d *DB) migrate() error {
 			return err
 		}
 		version = 5
+	}
+
+	// Version 5 → 6: change default monitor status from 'sometimes' to 'monitor'
+	if version < 6 {
+		if _, err := d.db.Exec("UPDATE artists SET monitor = 'monitor' WHERE monitor = 'sometimes'"); err != nil {
+			return err
+		}
+		version = 6
 	}
 
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
@@ -267,12 +276,6 @@ func (d *DB) backfillNorm() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for _, u := range fileUpdates {
-		if _, err := d.db.Exec("UPDATE files SET title_norm = ?, album_norm = ? WHERE path = ?",
-			u.titleNorm, u.albumNorm, u.path); err != nil {
-			return err
-		}
-	}
 
 	// Backfill tracks
 	trows, err := d.db.Query("SELECT artist_name, album_title, title FROM tracks")
@@ -295,14 +298,28 @@ func (d *DB) backfillNorm() error {
 	if err := trows.Err(); err != nil {
 		return err
 	}
+
+	// Write all updates in a single transaction.
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, u := range fileUpdates {
+		if _, err := tx.Exec("UPDATE files SET title_norm = ?, album_norm = ? WHERE path = ?",
+			u.titleNorm, u.albumNorm, u.path); err != nil {
+			return err
+		}
+	}
 	for _, u := range trackUpdates {
-		if _, err := d.db.Exec("UPDATE tracks SET title_norm = ?, album_norm = ? WHERE artist_name = ? AND album_title = ? AND title = ?",
+		if _, err := tx.Exec("UPDATE tracks SET title_norm = ?, album_norm = ? WHERE artist_name = ? AND album_title = ? AND title = ?",
 			u.titleNorm, u.albumNorm, u.artist, u.album, u.title); err != nil {
 			return err
 		}
 	}
 
-	return nil
+	return tx.Commit()
 }
 
 // UpsertFile inserts or updates a file record.
@@ -338,7 +355,7 @@ func (d *DB) FileChanged(path string, size int64, modTime time.Time) (bool, erro
 
 	err := d.db.QueryRow("SELECT size, mod_time, title FROM files WHERE path = ?", path).
 		Scan(&dbSize, &dbModTime, &title)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return true, nil
 	}
 	if err != nil {
@@ -379,7 +396,7 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	       COALESCE(a.mbid, '') AS mbid,
 	       COALESCE(al.total_albums, 0) AS total_albums,
 	       COALESCE(tr.total_tracks, 0) AS total_tracks,
-	       COALESCE(a.monitor, 'sometimes') AS monitor
+	       COALESCE(a.monitor, 'monitor') AS monitor
 	FROM files f
 	LEFT JOIN artists a ON a.name = f.artist
 	LEFT JOIN (
@@ -488,7 +505,7 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 		"SELECT name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name = ?",
 		name,
 	).Scan(&a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate, &notFound)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -658,15 +675,15 @@ var MonitorLabels = map[MonitorStatus]string{
 	MonitorIgnore:    "Ignore — never check",
 }
 
-// GetMonitorStatus returns the monitor status for an artist, defaulting to "sometimes".
+// GetMonitorStatus returns the monitor status for an artist, defaulting to MonitorAlways.
 func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
 	var status string
 	err := d.db.QueryRow("SELECT monitor FROM artists WHERE name = ?", artist).Scan(&status)
-	if err == sql.ErrNoRows {
-		return MonitorSometimes, nil
+	if errors.Is(err, sql.ErrNoRows) {
+		return MonitorAlways, nil
 	}
 	if err != nil {
-		return MonitorSometimes, err
+		return MonitorAlways, err
 	}
 	return MonitorStatus(status), nil
 }

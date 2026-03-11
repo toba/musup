@@ -86,7 +86,7 @@ func TestParseFilename(t *testing.T) {
 }
 
 func TestSupportedExts(t *testing.T) {
-	expected := []string{".flac", ".mp3", ".m4a", ".mp4", ".aac"}
+	expected := []string{".flac", ".mp3", ".m4a", ".mp4", ".aac", ".wma"}
 	for _, ext := range expected {
 		if _, ok := supportedExts[ext]; !ok {
 			t.Errorf("expected %s to be in supportedExts", ext)

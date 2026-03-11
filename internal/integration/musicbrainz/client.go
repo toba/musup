@@ -7,8 +7,9 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"sync"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 const defaultBaseURL = "https://musicbrainz.org/ws/2"
@@ -18,9 +19,7 @@ type Client struct {
 	base      string
 	http      *http.Client
 	userAgent string
-
-	mu       sync.Mutex
-	lastCall time.Time
+	limiter   *rate.Limiter
 }
 
 // New creates a Client with the required User-Agent identification.
@@ -35,6 +34,7 @@ func NewWithBase(base, appName, version, contact string) *Client {
 		base:      base,
 		http:      &http.Client{Timeout: 15 * time.Second},
 		userAgent: fmt.Sprintf("%s/%s ( %s )", appName, version, contact),
+		limiter:   rate.NewLimiter(rate.Every(time.Second), 1),
 	}
 }
 
@@ -113,7 +113,9 @@ func (c *Client) BrowseReleases(ctx context.Context, releaseGroupMBID, inc strin
 }
 
 func (c *Client) get(ctx context.Context, path string, params url.Values, dest any) error {
-	c.rateLimit()
+	if err := c.limiter.Wait(ctx); err != nil {
+		return err
+	}
 
 	reqURL := c.base + path + "?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
@@ -133,15 +135,4 @@ func (c *Client) get(ctx context.Context, path string, params url.Values, dest a
 		return fmt.Errorf("musicbrainz: %s", resp.Status)
 	}
 	return json.NewDecoder(resp.Body).Decode(dest)
-}
-
-// rateLimit enforces the 1 request/second limit.
-func (c *Client) rateLimit() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if elapsed := time.Since(c.lastCall); elapsed < time.Second {
-		time.Sleep(time.Second - elapsed)
-	}
-	c.lastCall = time.Now()
 }
