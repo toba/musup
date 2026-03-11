@@ -47,19 +47,15 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	// Status indicator: 2 chars (monitor=▲, ignore=—, sometimes=sync dot or blank)
+	// Status indicator: 2 chars — color encodes monitor level
 	var statusInd string
 	switch ai.monitor {
 	case state.MonitorAlways:
-		statusInd = localStyle.Render("▲ ")
+		statusInd = localStyle.Render("• ")
+	case state.MonitorSometimes:
+		statusInd = lipgloss.NewStyle().Foreground(colorWarning).Render("• ")
 	case state.MonitorIgnore:
-		statusInd = mutedStyle.Render("— ")
-	default:
-		if ai.synced {
-			statusInd = localStyle.Render("· ")
-		} else {
-			statusInd = "  "
-		}
+		statusInd = subtleStyle.Render("• ")
 	}
 
 	const numWidth = 7 // fits "xxx/yyy"

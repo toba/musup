@@ -11,7 +11,8 @@ var (
 	colorMuted  = lipgloss.Color("#9CA3AF")
 	colorSubtle = lipgloss.Color("#555555")
 	colorError  = lipgloss.Color("#FF5555")
-	colorLocal  = lipgloss.Color("#50FA7B")
+	colorLocal   = lipgloss.Color("#50FA7B")
+	colorWarning = lipgloss.Color("#F1FA8C")
 
 	titleStyle = lipgloss.NewStyle().
 			Foreground(colorAccent).
