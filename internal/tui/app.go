@@ -20,6 +20,7 @@ const (
 	viewSortPicker
 	viewStatusPicker
 	viewSyncing
+	viewBulkSyncing
 )
 
 type Model struct {
@@ -38,6 +39,7 @@ type Model struct {
 	sort        sortModel
 	status      statusModel
 	sync        syncModel
+	bulkSync    bulkSyncModel
 	prevState   viewState // view behind the sync modal
 }
 
@@ -94,6 +96,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sync = newSyncModel(m.db, m.mb, msg.artist)
 		m.state = viewSyncing
 		return m, m.sync.Init()
+	case startBulkSyncMsg:
+		m.prevState = m.state
+		m.bulkSync = newBulkSyncModel(m.db, m.mb, msg.artists)
+		m.state = viewBulkSyncing
+		return m, m.bulkSync.Init()
 	}
 
 	switch m.state {
@@ -208,6 +215,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, cmd
+
+	case viewBulkSyncing:
+		if msg, ok := msg.(tea.KeyMsg); ok {
+			switch msg.String() {
+			case "esc":
+				m.bulkSync.cancel()
+				m.bulkSync.cancelled = true
+				return m, nil
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			}
+		}
+
+		var cmd tea.Cmd
+		m.bulkSync, cmd = m.bulkSync.Update(msg)
+
+		if m.bulkSync.done {
+			m.list.refreshItems()
+			m.state = viewList
+			return m, nil
+		}
+
+		return m, cmd
 	}
 
 	return m, nil
@@ -233,6 +263,8 @@ func (m Model) View() string {
 	case viewSyncing:
 		bg := m.bgView()
 		return m.sync.View(m.width, m.height, bg)
+	case viewBulkSyncing:
+		return m.bulkSync.View(m.width, m.height, m.list.View())
 	}
 	return ""
 }

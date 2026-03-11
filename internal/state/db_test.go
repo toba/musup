@@ -986,6 +986,71 @@ func TestMarkLocalTracks_NormalizedAlbum(t *testing.T) {
 	}
 }
 
+func TestKnownAlbumMBIDs(t *testing.T) {
+	db := openTestDB(t)
+
+	// Album with tracks → should be in known set
+	if err := db.UpsertAlbum(AlbumRecord{
+		ArtistName: "Radiohead", Title: "OK Computer", MBID: "rg-okc", ReleaseDate: "1997-05-21", PrimaryType: "Album",
+	}); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+	if err := db.UpsertTrack(TrackRecord{
+		ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, MBID: "tr-1",
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	// Album without tracks → should NOT be in known set
+	if err := db.UpsertAlbum(AlbumRecord{
+		ArtistName: "Radiohead", Title: "Kid A", MBID: "rg-kida", ReleaseDate: "2000-10-02", PrimaryType: "Album",
+	}); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+
+	// Album with empty MBID → should NOT be in known set
+	if err := db.UpsertAlbum(AlbumRecord{
+		ArtistName: "Radiohead", Title: "Amnesiac", MBID: "", ReleaseDate: "2001-06-05", PrimaryType: "Album",
+	}); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+	if err := db.UpsertTrack(TrackRecord{
+		ArtistName: "Radiohead", AlbumTitle: "Amnesiac", Title: "Packt", Position: 1,
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	// Different artist → should not appear
+	if err := db.UpsertAlbum(AlbumRecord{
+		ArtistName: "Beck", Title: "Mellow Gold", MBID: "rg-mg", ReleaseDate: "1994-03-01", PrimaryType: "Album",
+	}); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+	if err := db.UpsertTrack(TrackRecord{
+		ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1, MBID: "tr-2",
+	}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	known, err := db.KnownAlbumMBIDs("Radiohead")
+	if err != nil {
+		t.Fatalf("KnownAlbumMBIDs: %v", err)
+	}
+
+	if _, ok := known["rg-okc"]; !ok {
+		t.Error("expected rg-okc (OK Computer with tracks) to be known")
+	}
+	if _, ok := known["rg-kida"]; ok {
+		t.Error("expected rg-kida (Kid A without tracks) to NOT be known")
+	}
+	if _, ok := known["rg-mg"]; ok {
+		t.Error("expected rg-mg (Beck album) to NOT appear for Radiohead")
+	}
+	if len(known) != 1 {
+		t.Fatalf("expected 1 known MBID, got %d: %v", len(known), known)
+	}
+}
+
 func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)

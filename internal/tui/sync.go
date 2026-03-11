@@ -51,6 +51,10 @@ type startSyncMsg struct {
 }
 
 func newSyncModel(db *state.DB, mb *musicbrainz.Client, artist string) syncModel {
+	return newSyncModelWithContext(context.Background(), db, mb, artist)
+}
+
+func newSyncModelWithContext(ctx context.Context, db *state.DB, mb *musicbrainz.Client, artist string) syncModel {
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
 		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
@@ -69,7 +73,7 @@ func newSyncModel(db *state.DB, mb *musicbrainz.Client, artist string) syncModel
 		phase:   "Connecting to MusicBrainz...",
 	}
 
-	go runSync(ch, mb, db, artist)
+	go runSync(ctx, ch, mb, db, artist)
 
 	return m
 }
@@ -154,11 +158,14 @@ func (m syncModel) View(width, height int, bg string) string {
 	return placeOverlay(width, height, rendered, bg)
 }
 
-func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist string) {
+func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist string) {
 	defer close(ch)
-	ctx := context.Background()
 
 	// Step 1: Search for artist
+	if ctx.Err() != nil {
+		ch <- syncDoneMsg{err: ctx.Err()}
+		return
+	}
 	ch <- syncProgressMsg{phase: "Searching MusicBrainz..."}
 
 	result, err := mb.SearchArtists(ctx, artist, 5, 0)
@@ -176,6 +183,10 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 	mbArtist := result.Artists[0]
 
 	// Step 2: Fetch release groups
+	if ctx.Err() != nil {
+		ch <- syncDoneMsg{err: ctx.Err()}
+		return
+	}
 	ch <- syncProgressMsg{phase: "Fetching albums..."}
 
 	rgs, err := mb.AllReleaseGroups(ctx, mbArtist.ID, "album")
@@ -217,6 +228,11 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 			continue
 		}
 
+		if ctx.Err() != nil {
+			ch <- syncDoneMsg{err: ctx.Err()}
+			return
+		}
+
 		fetched++
 		ch <- syncProgressMsg{
 			phase:   "Fetching tracks",
@@ -249,8 +265,6 @@ func runSync(ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist str
 			}
 		}
 	}
-
-	_ = i // suppress unused warning from range variable
 
 	// Step 4: Match local tracks
 	ch <- syncProgressMsg{phase: "Matching local library..."}

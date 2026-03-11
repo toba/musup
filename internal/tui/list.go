@@ -169,6 +169,16 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return startSyncMsg{artist: item.name} }
 			}
+		case "U":
+			var artists []string
+			for _, item := range m.allItems {
+				if item.monitor == state.MonitorAlways {
+					artists = append(artists, item.name)
+				}
+			}
+			if len(artists) > 0 {
+				return m, func() tea.Msg { return startBulkSyncMsg{artists: artists} }
+			}
 		case "s":
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return showStatusMsg{artist: item.name, current: item.monitor} }
@@ -225,7 +235,7 @@ func (m *listModel) applySort() {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · U: sync all · enter: detail · q: quit"))
 	return b.String()
 }
 

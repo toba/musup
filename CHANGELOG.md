@@ -6,6 +6,7 @@
 
 - Implement MusicBrainz client for release lookups ([#4](https://github.com/toba/musup/issues/4))
 - Add monitor status modal (`s` shortcut) for artists ([#12](https://github.com/toba/musup/issues/12))
+- Bulk sync (`Shift+U`) for `MonitorAlways` artists
 
 ### 🐛 Fixes
 
@@ -20,3 +21,4 @@
 - Find Go library to read audio file metadata ([#3](https://github.com/toba/musup/issues/3))
 - Design and implement state management ([#2](https://github.com/toba/musup/issues/2))
 - Auto-migrate SQLite database with version tracking ([#7](https://github.com/toba/musup/issues/7))
+- Skip MusicBrainz track fetch for known albums ([#15](https://github.com/toba/musup/issues/15))
