@@ -113,6 +113,7 @@ type listModel struct {
 
 func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height int) listModel {
 	items := summariesToItems(summaries)
+	sortArtists(items, sortByName)
 
 	listItems := make([]list.Item, len(items))
 	for i := range items {

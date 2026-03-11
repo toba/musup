@@ -16,6 +16,7 @@
 - Fix list view column spacing; use dynamic name column width and rune-aware padding ([#11](https://github.com/toba/musup/issues/11))
 - Local tracks show 0 in album detail for 10,000 Maniacs despite correct count in list view ([#10](https://github.com/toba/musup/issues/10))
 - Fix `U` (bulk sync) command doing nothing in artist list
+- Default sort not stripping leading articles ("A", "The") on initial load
 
 ### 🗜️ Tweaks
 
