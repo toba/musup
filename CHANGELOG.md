@@ -4,6 +4,7 @@
 
 ### ✨ Features
 
+- Cap album/track fetching for excessive MusicBrainz results
 - Implement MusicBrainz client for release lookups ([#4](https://github.com/toba/musup/issues/4))
 - Add monitor status modal (`s` shortcut) for artists ([#12](https://github.com/toba/musup/issues/12))
 - Bulk sync (`Shift+U`) for `MonitorAlways` artists

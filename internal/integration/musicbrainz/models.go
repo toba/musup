@@ -18,6 +18,21 @@ type Artist struct {
 	Score          int      `json:"score"`
 	LifeSpan       LifeSpan `json:"life-span"`
 	Aliases        []Alias  `json:"aliases"`
+	Tags           []Tag    `json:"tags"`
+}
+
+// Tag is a user-submitted tag on a MusicBrainz entity.
+type Tag struct {
+	Count int    `json:"count"`
+	Name  string `json:"name"`
+}
+
+// ReleaseGroupResult holds the result of fetching all release groups,
+// including whether results were capped.
+type ReleaseGroupResult struct {
+	ReleaseGroups []ReleaseGroup
+	TotalCount    int
+	Capped        bool
 }
 
 // LifeSpan represents the active period of an artist.

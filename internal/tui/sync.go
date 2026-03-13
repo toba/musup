@@ -145,6 +145,15 @@ func (m syncModel) View(width, height int, bg string) string {
 	return placeOverlay(width, height, rendered, bg)
 }
 
+func hasComposerTag(artist musicbrainz.Artist) bool {
+	for _, tag := range artist.Tags {
+		if tag.Name == "composer" {
+			return true
+		}
+	}
+	return false
+}
+
 func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist string) {
 	defer close(ch)
 
@@ -176,14 +185,28 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	}
 	ch <- syncProgressMsg{phase: "Fetching albums..."}
 
-	rgs, err := mb.AllReleaseGroups(ctx, mbArtist.ID, "album")
+	rgCap := mbMaxReleaseGroups
+	if hasComposerTag(mbArtist) {
+		rgCap = mbMaxReleaseGroupsComposer
+	}
+
+	rgResult, err := mb.AllReleaseGroups(ctx, mbArtist.ID, "album", rgCap)
 	if err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("fetch release groups: %w", err)}
 		return
 	}
 
-	ch <- syncProgressMsg{
-		phase: fmt.Sprintf("Found %d albums", len(rgs)),
+	rgs := rgResult.ReleaseGroups
+	capped := rgResult.Capped
+
+	if capped {
+		ch <- syncProgressMsg{
+			phase: fmt.Sprintf("Too many albums (%d) — stored first %d, skipping tracks", rgResult.TotalCount, len(rgs)),
+		}
+	} else {
+		ch <- syncProgressMsg{
+			phase: fmt.Sprintf("Found %d albums", len(rgs)),
+		}
 	}
 
 	// Build set of albums we already have tracks for so we can skip
@@ -208,6 +231,11 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 		}); err != nil {
 			ch <- syncDoneMsg{err: fmt.Errorf("upsert album: %w", err)}
 			return
+		}
+
+		// When capped, skip all track fetching — we only store album metadata.
+		if capped {
+			continue
 		}
 
 		// Skip the expensive BrowseReleases call if we already have tracks.

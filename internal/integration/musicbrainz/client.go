@@ -75,7 +75,9 @@ func (c *Client) BrowseReleaseGroups(ctx context.Context, artistMBID, typeFilter
 }
 
 // AllReleaseGroups pages through all release groups for an artist.
-func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID, typeFilter string) ([]ReleaseGroup, error) {
+// If maxResults > 0 and the total count exceeds it, only the first page
+// is returned with Capped set to true.
+func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID, typeFilter string, maxResults int) (*ReleaseGroupResult, error) {
 	const pageSize = 100
 	var all []ReleaseGroup
 
@@ -85,11 +87,24 @@ func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID, typeFilter st
 			return nil, err
 		}
 		all = append(all, page.ReleaseGroups...)
+
+		if maxResults > 0 && offset == 0 && page.Count > maxResults {
+			return &ReleaseGroupResult{
+				ReleaseGroups: all,
+				TotalCount:    page.Count,
+				Capped:        true,
+			}, nil
+		}
+
 		if len(all) >= page.Count {
 			break
 		}
 	}
-	return all, nil
+	return &ReleaseGroupResult{
+		ReleaseGroups: all,
+		TotalCount:    len(all),
+		Capped:        false,
+	}, nil
 }
 
 // BrowseReleases returns releases for a release group MBID.

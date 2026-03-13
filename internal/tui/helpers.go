@@ -10,10 +10,12 @@ import (
 )
 
 const (
-	mbMinMatchScore = 90
-	mbSearchLimit   = 5
-	spinnerFPS      = 80 * time.Millisecond
-	headerSepWidth  = 40
+	mbMinMatchScore            = 90
+	mbSearchLimit              = 5
+	mbMaxReleaseGroups         = 500
+	mbMaxReleaseGroupsComposer = 100
+	spinnerFPS                 = 80 * time.Millisecond
+	headerSepWidth             = 40
 )
 
 var headerSep = subtleStyle.Render(strings.Repeat("─", headerSepWidth))

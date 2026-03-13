@@ -137,12 +137,15 @@ func TestAllReleaseGroups_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
-	all, err := client.AllReleaseGroups(context.Background(), "abc-123", "album")
+	result, err := client.AllReleaseGroups(context.Background(), "abc-123", "album", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(all) != 150 {
-		t.Fatalf("expected 150 release groups, got %d", len(all))
+	if len(result.ReleaseGroups) != 150 {
+		t.Fatalf("expected 150 release groups, got %d", len(result.ReleaseGroups))
+	}
+	if result.Capped {
+		t.Fatal("expected Capped=false")
 	}
 	if callCount != 2 {
 		t.Fatalf("expected 2 API calls, got %d", callCount)
@@ -241,12 +244,12 @@ func TestAllReleaseGroups_Empty(t *testing.T) {
 	defer srv.Close()
 
 	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
-	all, err := client.AllReleaseGroups(context.Background(), "abc-123", "album")
+	result, err := client.AllReleaseGroups(context.Background(), "abc-123", "album", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(all) != 0 {
-		t.Fatalf("expected 0 release groups, got %d", len(all))
+	if len(result.ReleaseGroups) != 0 {
+		t.Fatalf("expected 0 release groups, got %d", len(result.ReleaseGroups))
 	}
 }
 
@@ -270,15 +273,100 @@ func TestAllReleaseGroups_SinglePage(t *testing.T) {
 	defer srv.Close()
 
 	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
-	all, err := client.AllReleaseGroups(context.Background(), "abc-123", "album")
+	result, err := client.AllReleaseGroups(context.Background(), "abc-123", "album", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(all) != 5 {
-		t.Fatalf("expected 5 release groups, got %d", len(all))
+	if len(result.ReleaseGroups) != 5 {
+		t.Fatalf("expected 5 release groups, got %d", len(result.ReleaseGroups))
 	}
 	if callCount != 1 {
 		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+}
+
+func TestAllReleaseGroups_Capped(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		var rgs []musicbrainz.ReleaseGroup
+		for i := range 100 {
+			rgs = append(rgs, musicbrainz.ReleaseGroup{
+				ID:    fmt.Sprintf("rg-%d", i),
+				Title: fmt.Sprintf("Album %d", i),
+			})
+		}
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
+			Count:         5000,
+			Offset:        0,
+			ReleaseGroups: rgs,
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	result, err := client.AllReleaseGroups(context.Background(), "abc-123", "album", 500)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Capped {
+		t.Fatal("expected Capped=true")
+	}
+	if result.TotalCount != 5000 {
+		t.Fatalf("expected TotalCount=5000, got %d", result.TotalCount)
+	}
+	if len(result.ReleaseGroups) != 100 {
+		t.Fatalf("expected 100 release groups, got %d", len(result.ReleaseGroups))
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 API call, got %d", callCount)
+	}
+}
+
+func TestAllReleaseGroups_BelowCap(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		offset := r.URL.Query().Get("offset")
+
+		var rgs []musicbrainz.ReleaseGroup
+		if offset == "0" {
+			for i := range 100 {
+				rgs = append(rgs, musicbrainz.ReleaseGroup{
+					ID:    fmt.Sprintf("rg-%d", i),
+					Title: fmt.Sprintf("Album %d", i),
+				})
+			}
+		} else {
+			for i := range 50 {
+				rgs = append(rgs, musicbrainz.ReleaseGroup{
+					ID:    fmt.Sprintf("rg-%d", 100+i),
+					Title: fmt.Sprintf("Album %d", 100+i),
+				})
+			}
+		}
+
+		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
+			Count:         150,
+			Offset:        0,
+			ReleaseGroups: rgs,
+		})
+	}))
+	defer srv.Close()
+
+	client := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@example.com")
+	result, err := client.AllReleaseGroups(context.Background(), "abc-123", "album", 500)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Capped {
+		t.Fatal("expected Capped=false")
+	}
+	if len(result.ReleaseGroups) != 150 {
+		t.Fatalf("expected 150 release groups, got %d", len(result.ReleaseGroups))
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 API calls, got %d", callCount)
 	}
 }
 
