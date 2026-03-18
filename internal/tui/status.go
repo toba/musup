@@ -36,10 +36,7 @@ func (m statusModel) Update(msg tea.Msg) (statusModel, tea.Cmd) {
 			m.cursor = (m.cursor - 1 + len(state.MonitorStatuses)) % len(state.MonitorStatuses)
 		case "enter":
 			chosen := state.MonitorStatuses[m.cursor]
-			if err := m.db.SetMonitorStatus(m.artist, chosen); err != nil {
-				m.err = err
-				return m, nil
-			}
+			m.err = m.db.SetMonitorStatus(m.artist, chosen)
 			return m, func() tea.Msg { return statusChosenMsg{artist: m.artist, status: chosen} }
 		case "esc":
 			return m, func() tea.Msg { return statusCancelMsg{} }
