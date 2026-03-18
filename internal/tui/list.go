@@ -22,6 +22,7 @@ type artistItem struct {
 	totalTracks int    // catalog (0 = not synced)
 	synced      bool
 	monitor     state.MonitorStatus
+	hasNew      bool
 }
 
 func (i artistItem) FilterValue() string { return i.name }
@@ -109,6 +110,7 @@ type listModel struct {
 	db       *state.DB
 	allItems []artistItem
 	sortMode sortMode
+	showNew  bool // filter to artists with newer catalog albums
 }
 
 func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height int) listModel {
@@ -170,6 +172,15 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
 				return m, func() tea.Msg { return showStatusMsg{artist: item.name, current: item.monitor} }
 			}
+		case "n":
+			m.showNew = !m.showNew
+			m.applySort()
+			if m.showNew {
+				m.list.NewStatusMessage(localStyle.Render("Showing artists with new releases"))
+			} else {
+				m.list.NewStatusMessage(subtleStyle.Render("Showing all artists"))
+			}
+			return m, nil
 		case "o":
 			return m, func() tea.Msg { return showSortMsg{} }
 		case "q", "ctrl+c":
@@ -195,21 +206,39 @@ func (m *listModel) refreshItems() {
 }
 
 func (m *listModel) applySort() {
-	sorted := make([]artistItem, len(m.allItems))
-	copy(sorted, m.allItems)
-	sortArtists(sorted, m.sortMode)
+	var filtered []artistItem
+	if m.showNew {
+		for _, item := range m.allItems {
+			if item.hasNew {
+				filtered = append(filtered, item)
+			}
+		}
+	} else {
+		filtered = make([]artistItem, len(m.allItems))
+		copy(filtered, m.allItems)
+	}
+	sortArtists(filtered, m.sortMode)
 
-	listItems := make([]list.Item, len(sorted))
-	for i := range sorted {
-		listItems[i] = sorted[i]
+	listItems := make([]list.Item, len(filtered))
+	for i := range filtered {
+		listItems[i] = filtered[i]
 	}
 	m.list.SetItems(listItems)
+	m.updateTitle(len(filtered))
+}
+
+func (m *listModel) updateTitle(count int) {
+	if m.showNew {
+		m.list.Title = fmt.Sprintf("musup — %d artists with new releases", count)
+	} else {
+		m.list.Title = fmt.Sprintf("musup — %d artists", count)
+	}
 }
 
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · s: status · o: sort · u: sync · U: sync monitored · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · s: status · o: sort · u: sync · U: sync monitored · enter: detail · q: quit"))
 	return b.String()
 }
 

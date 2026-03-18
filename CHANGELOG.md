@@ -1,5 +1,12 @@
 # Changelog
 
+## Week of Mar 15 – Mar 21, 2026
+
+### ✨ Features
+
+- Merge artists with names differing only by case or punctuation
+- Filter artist list to show only artists with newer albums than local
+
 ## Week of Mar 8 – Mar 14, 2026
 
 ### ✨ Features

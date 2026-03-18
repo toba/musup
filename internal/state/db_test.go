@@ -835,8 +835,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("expected user_version 6, got %d", version)
+	if version != 7 {
+		t.Fatalf("expected user_version 7, got %d", version)
 	}
 }
 
@@ -863,8 +863,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 6 {
-		t.Fatalf("expected user_version 6, got %d", version)
+	if version != 7 {
+		t.Fatalf("expected user_version 7, got %d", version)
 	}
 }
 
@@ -1313,6 +1313,68 @@ func TestUpsertArtist_UpdateFields(t *testing.T) {
 	}
 }
 
+func TestArtistSummaries_HasNew(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Seed local files for two artists.
+	for _, f := range []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Radiohead", Album: "OK Computer", Title: "Airbag", ScannedAt: now},
+		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Mellow Gold", Title: "Loser", ScannedAt: now},
+		{Path: "c/1.flac", Size: 100, ModTime: now, Artist: "Bjork", Album: "Debut", Title: "Human Behaviour", ScannedAt: now},
+	} {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	// Radiohead: catalog has albums from 1997 and 2016; local tracks on 1997 album only → HasNew = true
+	for _, a := range []AlbumRecord{
+		{ArtistName: "Radiohead", Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
+		{ArtistName: "Radiohead", Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
+	} {
+		if err := db.UpsertAlbum(a); err != nil {
+			t.Fatalf("UpsertAlbum: %v", err)
+		}
+	}
+	if err := db.UpsertTrack(TrackRecord{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, Local: true}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	// Beck: catalog only has the album the user already has locally → HasNew = false
+	if err := db.UpsertAlbum(AlbumRecord{ArtistName: "Beck", Title: "Mellow Gold", MBID: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album"}); err != nil {
+		t.Fatalf("UpsertAlbum: %v", err)
+	}
+	if err := db.UpsertTrack(TrackRecord{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1, Local: true}); err != nil {
+		t.Fatalf("UpsertTrack: %v", err)
+	}
+
+	// Bjork: not synced (no albums/tracks in catalog) → HasNew = false
+
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if len(summaries) != 3 {
+		t.Fatalf("expected 3 summaries, got %d", len(summaries))
+	}
+
+	byName := make(map[string]ArtistSummary)
+	for _, s := range summaries {
+		byName[s.Name] = s
+	}
+
+	if !byName["Radiohead"].HasNew {
+		t.Error("expected Radiohead HasNew = true (catalog album 2016 > local 1997)")
+	}
+	if byName["Beck"].HasNew {
+		t.Error("expected Beck HasNew = false (no catalog albums newer than local)")
+	}
+	if byName["Bjork"].HasNew {
+		t.Error("expected Bjork HasNew = false (not synced)")
+	}
+}
+
 func TestArtistSummaries_MonitorField(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
@@ -1359,5 +1421,49 @@ func TestArtistSummaries_MonitorField(t *testing.T) {
 	}
 	if summaries[0].Monitor != MonitorSometimes {
 		t.Fatalf("expected MonitorSometimes, got %q", summaries[0].Monitor)
+	}
+}
+
+func TestArtistSummaries_MergesByNorm(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Insert files with different casings of the same artist name.
+	// "Alice In Chains" (3 files) vs "Alice in Chains" (1 file) — should merge.
+	files := []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Dirt", Title: "Rooster", ScannedAt: now},
+		{Path: "a/2.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Dirt", Title: "Down in a Hole", ScannedAt: now},
+		{Path: "a/3.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Jar of Flies", Title: "No Excuses", ScannedAt: now},
+		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Alice in Chains", Album: "Facelift", Title: "Man in the Box", ScannedAt: now},
+	}
+	for _, f := range files {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+
+	if len(summaries) != 1 {
+		names := make([]string, len(summaries))
+		for i, s := range summaries {
+			names[i] = fmt.Sprintf("%q (tracks=%d)", s.Name, s.TrackCount)
+		}
+		t.Fatalf("expected 1 merged artist, got %d: %v", len(summaries), names)
+	}
+
+	s := summaries[0]
+	// Canonical name should be the most-used variant.
+	if s.Name != "Alice In Chains" {
+		t.Errorf("expected canonical name %q, got %q", "Alice In Chains", s.Name)
+	}
+	if s.TrackCount != 4 {
+		t.Errorf("expected 4 tracks, got %d", s.TrackCount)
+	}
+	if s.AlbumCount != 3 {
+		t.Errorf("expected 3 albums (Dirt, Jar of Flies, Facelift), got %d", s.AlbumCount)
 	}
 }

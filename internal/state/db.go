@@ -203,6 +203,30 @@ func (d *DB) migrate() error {
 		version = 6
 	}
 
+	// Version 6 → 7: add artist_norm / name_norm columns for case-insensitive matching
+	if version < 7 {
+		for _, stmt := range []struct{ table, col string }{
+			{"files", "artist_norm"},
+			{"artists", "name_norm"},
+			{"albums", "artist_norm"},
+			{"tracks", "artist_norm"},
+		} {
+			if err := d.addColumnIfMissing(stmt.table, stmt.col, "TEXT NOT NULL DEFAULT ''"); err != nil {
+				return err
+			}
+		}
+		if err := d.backfillArtistNorm(); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec(`
+			CREATE INDEX IF NOT EXISTS idx_files_artist_norm ON files(artist_norm);
+			CREATE INDEX IF NOT EXISTS idx_artists_name_norm ON artists(name_norm);
+		`); err != nil {
+			return err
+		}
+		version = 7
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -322,11 +346,121 @@ func (d *DB) backfillNorm() error {
 	return tx.Commit()
 }
 
+func (d *DB) backfillArtistNorm() error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// files: backfill artist_norm from artist
+	fRows, err := tx.Query("SELECT path, artist FROM files")
+	if err != nil {
+		return err
+	}
+	type pathArtist struct{ path, norm string }
+	var fUpdates []pathArtist
+	for fRows.Next() {
+		var path, artist string
+		if err := fRows.Scan(&path, &artist); err != nil {
+			_ = fRows.Close()
+			return err
+		}
+		fUpdates = append(fUpdates, pathArtist{path, Normalize(artist)})
+	}
+	_ = fRows.Close()
+	if err := fRows.Err(); err != nil {
+		return err
+	}
+	for _, u := range fUpdates {
+		if _, err := tx.Exec("UPDATE files SET artist_norm = ? WHERE path = ?", u.norm, u.path); err != nil {
+			return err
+		}
+	}
+
+	// artists: backfill name_norm from name
+	aRows, err := tx.Query("SELECT name FROM artists")
+	if err != nil {
+		return err
+	}
+	type nameNorm struct{ name, norm string }
+	var aUpdates []nameNorm
+	for aRows.Next() {
+		var name string
+		if err := aRows.Scan(&name); err != nil {
+			_ = aRows.Close()
+			return err
+		}
+		aUpdates = append(aUpdates, nameNorm{name, Normalize(name)})
+	}
+	_ = aRows.Close()
+	if err := aRows.Err(); err != nil {
+		return err
+	}
+	for _, u := range aUpdates {
+		if _, err := tx.Exec("UPDATE artists SET name_norm = ? WHERE name = ?", u.norm, u.name); err != nil {
+			return err
+		}
+	}
+
+	// albums: backfill artist_norm from artist_name
+	alRows, err := tx.Query("SELECT artist_name, title FROM albums")
+	if err != nil {
+		return err
+	}
+	type albumKey struct{ artist, title, norm string }
+	var alUpdates []albumKey
+	for alRows.Next() {
+		var artist, title string
+		if err := alRows.Scan(&artist, &title); err != nil {
+			_ = alRows.Close()
+			return err
+		}
+		alUpdates = append(alUpdates, albumKey{artist, title, Normalize(artist)})
+	}
+	_ = alRows.Close()
+	if err := alRows.Err(); err != nil {
+		return err
+	}
+	for _, u := range alUpdates {
+		if _, err := tx.Exec("UPDATE albums SET artist_norm = ? WHERE artist_name = ? AND title = ?", u.norm, u.artist, u.title); err != nil {
+			return err
+		}
+	}
+
+	// tracks: backfill artist_norm from artist_name
+	tRows, err := tx.Query("SELECT artist_name, album_title, title FROM tracks")
+	if err != nil {
+		return err
+	}
+	type trackKey struct{ artist, album, title, norm string }
+	var tUpdates []trackKey
+	for tRows.Next() {
+		var artist, album, title string
+		if err := tRows.Scan(&artist, &album, &title); err != nil {
+			_ = tRows.Close()
+			return err
+		}
+		tUpdates = append(tUpdates, trackKey{artist, album, title, Normalize(artist)})
+	}
+	_ = tRows.Close()
+	if err := tRows.Err(); err != nil {
+		return err
+	}
+	for _, u := range tUpdates {
+		if _, err := tx.Exec("UPDATE tracks SET artist_norm = ? WHERE artist_name = ? AND album_title = ? AND title = ?", u.norm, u.artist, u.album, u.title); err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
 // UpsertFile inserts or updates a file record.
 func (d *DB) UpsertFile(f FileRecord) error {
 	const q = `
-	INSERT INTO files (path, size, mod_time, artist, album, title, track_number, scanned_at, title_norm, album_norm)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO files (path, size, mod_time, artist, album, title, track_number, scanned_at, title_norm, album_norm, artist_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(path) DO UPDATE SET
 		size         = excluded.size,
 		mod_time     = excluded.mod_time,
@@ -336,12 +470,13 @@ func (d *DB) UpsertFile(f FileRecord) error {
 		track_number = excluded.track_number,
 		scanned_at   = excluded.scanned_at,
 		title_norm   = excluded.title_norm,
-		album_norm   = excluded.album_norm
+		album_norm   = excluded.album_norm,
+		artist_norm  = excluded.artist_norm
 	`
 	_, err := d.db.Exec(q,
 		f.Path, f.Size, f.ModTime.Format(time.RFC3339),
 		f.Artist, f.Album, f.Title, f.TrackNumber, f.ScannedAt.Format(time.RFC3339),
-		Normalize(f.Title), Normalize(f.Album),
+		Normalize(f.Title), Normalize(f.Album), Normalize(f.Artist),
 	)
 	return err
 }
@@ -384,32 +519,46 @@ type ArtistSummary struct {
 	TotalTracks int           // catalog tracks (from tracks table, 0 if not synced)
 	Synced      bool          // artist has MBID in artists table
 	Monitor     MonitorStatus // monitor/sometimes/ignore
+	HasNew      bool          // catalog has albums newer than latest local album
 }
 
 // ArtistSummaries returns all artists with album counts and newest album name.
 func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	const q = `
-	SELECT f.artist,
+	SELECT (SELECT artist FROM files WHERE artist_norm = f.artist_norm
+	        GROUP BY artist ORDER BY COUNT(*) DESC LIMIT 1) AS display_name,
 	       COUNT(DISTINCT f.album) AS album_cnt,
 	       COALESCE(MAX(CASE WHEN f.album != '' THEN f.album END), '') AS newest,
 	       COUNT(*) AS track_cnt,
 	       COALESCE(a.mbid, '') AS mbid,
 	       COALESCE(al.total_albums, 0) AS total_albums,
 	       COALESCE(tr.total_tracks, 0) AS total_tracks,
-	       COALESCE(a.monitor, 'monitor') AS monitor
+	       COALESCE(a.monitor, 'monitor') AS monitor,
+	       COALESCE((
+	           SELECT 1 FROM albums a2
+	           WHERE a2.artist_norm = f.artist_norm
+	             AND a2.release_date > COALESCE((
+	                 SELECT MAX(a3.release_date)
+	                 FROM albums a3
+	                 JOIN tracks t3 ON t3.artist_norm = a3.artist_norm
+	                                AND t3.album_title = a3.title
+	                 WHERE a3.artist_norm = f.artist_norm AND t3.local = 1
+	             ), '')
+	           LIMIT 1
+	       ), 0) AS has_new
 	FROM files f
-	LEFT JOIN artists a ON a.name = f.artist
+	LEFT JOIN artists a ON a.name_norm = f.artist_norm
 	LEFT JOIN (
-	    SELECT artist_name, COUNT(*) AS total_albums
-	    FROM albums GROUP BY artist_name
-	) al ON al.artist_name = f.artist
+	    SELECT artist_norm, COUNT(*) AS total_albums
+	    FROM albums GROUP BY artist_norm
+	) al ON al.artist_norm = f.artist_norm
 	LEFT JOIN (
-	    SELECT artist_name, COUNT(*) AS total_tracks
-	    FROM tracks GROUP BY artist_name
-	) tr ON tr.artist_name = f.artist
+	    SELECT artist_norm, COUNT(*) AS total_tracks
+	    FROM tracks GROUP BY artist_norm
+	) tr ON tr.artist_norm = f.artist_norm
 	WHERE f.artist != ''
-	GROUP BY f.artist
-	ORDER BY f.artist
+	GROUP BY f.artist_norm
+	ORDER BY f.artist_norm
 	`
 	rows, err := d.db.Query(q)
 	if err != nil {
@@ -421,12 +570,14 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	for rows.Next() {
 		var s ArtistSummary
 		var mbid, monitor string
+		var hasNew int
 		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
-			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor); err != nil {
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor, &hasNew); err != nil {
 			return nil, err
 		}
 		s.Synced = mbid != ""
 		s.Monitor = MonitorStatus(monitor)
+		s.HasNew = hasNew != 0
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()
@@ -454,8 +605,8 @@ func (d *DB) UniqueArtists() ([]string, error) {
 // LocalAlbums returns distinct album names for a given artist.
 func (d *DB) LocalAlbums(artist string) ([]string, error) {
 	rows, err := d.db.Query(
-		"SELECT DISTINCT album FROM files WHERE artist = ? AND album != '' ORDER BY album",
-		artist,
+		"SELECT DISTINCT album FROM files WHERE artist_norm = ? AND album != '' ORDER BY album",
+		Normalize(artist),
 	)
 	if err != nil {
 		return nil, err
@@ -476,14 +627,15 @@ func (d *DB) LocalAlbums(artist string) ([]string, error) {
 // UpsertArtist inserts or updates an artist record.
 func (d *DB) UpsertArtist(a ArtistRecord) error {
 	const q = `
-	INSERT INTO artists (name, mbid, last_checked_at, latest_release, latest_date, not_found)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO artists (name, mbid, last_checked_at, latest_release, latest_date, not_found, name_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(name) DO UPDATE SET
 		mbid             = excluded.mbid,
 		last_checked_at  = excluded.last_checked_at,
 		latest_release   = excluded.latest_release,
 		latest_date      = excluded.latest_date,
-		not_found        = excluded.not_found
+		not_found        = excluded.not_found,
+		name_norm        = excluded.name_norm
 	`
 	notFound := 0
 	if a.NotFound {
@@ -491,7 +643,7 @@ func (d *DB) UpsertArtist(a ArtistRecord) error {
 	}
 	_, err := d.db.Exec(q,
 		a.Name, a.MBID, a.LastCheckedAt.Format(time.RFC3339),
-		a.LatestRelease, a.LatestDate, notFound,
+		a.LatestRelease, a.LatestDate, notFound, Normalize(a.Name),
 	)
 	return err
 }
@@ -502,8 +654,8 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 	var lastChecked string
 	var notFound int
 	err := d.db.QueryRow(
-		"SELECT name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name = ?",
-		name,
+		"SELECT name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name_norm = ?",
+		Normalize(name),
 	).Scan(&a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate, &notFound)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -521,27 +673,29 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 // MarkArtistNotFound upserts an artist with not_found = 1.
 func (d *DB) MarkArtistNotFound(name string) error {
 	const q = `
-	INSERT INTO artists (name, not_found)
-	VALUES (?, 1)
+	INSERT INTO artists (name, not_found, name_norm)
+	VALUES (?, 1, ?)
 	ON CONFLICT(name) DO UPDATE SET
-		not_found = 1
+		not_found = 1,
+		name_norm = excluded.name_norm
 	`
-	_, err := d.db.Exec(q, name)
+	_, err := d.db.Exec(q, name, Normalize(name))
 	return err
 }
 
 // UpsertAlbum inserts or updates an album record.
 func (d *DB) UpsertAlbum(a AlbumRecord) error {
 	const q = `
-	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type, secondary_types)
-	VALUES (?, ?, ?, ?, ?, ?)
+	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type, secondary_types, artist_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(artist_name, title) DO UPDATE SET
 		mbid            = excluded.mbid,
 		release_date    = excluded.release_date,
 		primary_type    = excluded.primary_type,
-		secondary_types = excluded.secondary_types
+		secondary_types = excluded.secondary_types,
+		artist_norm     = excluded.artist_norm
 	`
-	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType, a.SecondaryTypes)
+	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType, a.SecondaryTypes, Normalize(a.ArtistName))
 	return err
 }
 
@@ -559,10 +713,10 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 		FROM tracks
 		GROUP BY artist_name, album_title
 	) t ON t.artist_name = a.artist_name AND t.album_title = a.title
-	WHERE a.artist_name = ?
+	WHERE a.artist_norm = ?
 	ORDER BY a.release_date ASC, a.title ASC
 	`
-	rows, err := d.db.Query(q, artistName)
+	rows, err := d.db.Query(q, Normalize(artistName))
 	if err != nil {
 		return nil, err
 	}
@@ -587,18 +741,19 @@ func (d *DB) UpsertTrack(t TrackRecord) error {
 		local = 1
 	}
 	const q = `
-	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local, title_norm, album_norm)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local, title_norm, album_norm, artist_norm)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(artist_name, album_title, title) DO UPDATE SET
-		position   = excluded.position,
-		mbid       = excluded.mbid,
-		length_ms  = excluded.length_ms,
-		local      = excluded.local,
-		title_norm = excluded.title_norm,
-		album_norm = excluded.album_norm
+		position    = excluded.position,
+		mbid        = excluded.mbid,
+		length_ms   = excluded.length_ms,
+		local       = excluded.local,
+		title_norm  = excluded.title_norm,
+		album_norm  = excluded.album_norm,
+		artist_norm = excluded.artist_norm
 	`
 	_, err := d.db.Exec(q, t.ArtistName, t.AlbumTitle, t.Title, t.Position, t.MBID, t.LengthMS, local,
-		Normalize(t.Title), Normalize(t.AlbumTitle))
+		Normalize(t.Title), Normalize(t.AlbumTitle), Normalize(t.ArtistName))
 	return err
 }
 
@@ -610,9 +765,9 @@ func (d *DB) KnownAlbumMBIDs(artistName string) (map[string]struct{}, error) {
 	SELECT DISTINCT a.mbid
 	FROM albums a
 	JOIN tracks t ON t.artist_name = a.artist_name AND t.album_title = a.title
-	WHERE a.artist_name = ? AND a.mbid != ''
+	WHERE a.artist_norm = ? AND a.mbid != ''
 	`
-	rows, err := d.db.Query(q, artistName)
+	rows, err := d.db.Query(q, Normalize(artistName))
 	if err != nil {
 		return nil, err
 	}
@@ -634,10 +789,10 @@ func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
 	const q = `
 	SELECT artist_name, album_title, title, position, mbid, length_ms, local
 	FROM tracks
-	WHERE artist_name = ? AND album_title = ?
+	WHERE artist_norm = ? AND album_title = ?
 	ORDER BY position ASC
 	`
-	rows, err := d.db.Query(q, artistName, albumTitle)
+	rows, err := d.db.Query(q, Normalize(artistName), albumTitle)
 	if err != nil {
 		return nil, err
 	}
@@ -678,7 +833,7 @@ var MonitorLabels = map[MonitorStatus]string{
 // GetMonitorStatus returns the monitor status for an artist, defaulting to MonitorAlways.
 func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
 	var status string
-	err := d.db.QueryRow("SELECT monitor FROM artists WHERE name = ?", artist).Scan(&status)
+	err := d.db.QueryRow("SELECT monitor FROM artists WHERE name_norm = ?", Normalize(artist)).Scan(&status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return MonitorAlways, nil
 	}
@@ -691,10 +846,12 @@ func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
 // SetMonitorStatus sets the monitor status for an artist, upserting the artists row.
 func (d *DB) SetMonitorStatus(artist string, status MonitorStatus) error {
 	const q = `
-	INSERT INTO artists (name, monitor) VALUES (?, ?)
-	ON CONFLICT(name) DO UPDATE SET monitor = excluded.monitor
+	INSERT INTO artists (name, monitor, name_norm) VALUES (?, ?, ?)
+	ON CONFLICT(name) DO UPDATE SET
+		monitor   = excluded.monitor,
+		name_norm = excluded.name_norm
 	`
-	_, err := d.db.Exec(q, artist, string(status))
+	_, err := d.db.Exec(q, artist, string(status), Normalize(artist))
 	return err
 }
 
@@ -707,7 +864,7 @@ func (d *DB) MarkLocalTracks(artistName string) error {
 	UPDATE tracks SET local = (
 		EXISTS (
 			SELECT 1 FROM files
-			WHERE files.artist = tracks.artist_name
+			WHERE files.artist_norm = tracks.artist_norm
 			  AND files.album_norm = tracks.album_norm
 			  AND (
 			    files.title_norm = tracks.title_norm
@@ -716,14 +873,14 @@ func (d *DB) MarkLocalTracks(artistName string) error {
 		)
 		OR EXISTS (
 			SELECT 1 FROM files
-			WHERE files.artist = tracks.artist_name
+			WHERE files.artist_norm = tracks.artist_norm
 			  AND files.title_norm != ''
 			  AND files.title_norm = tracks.title_norm
 		)
 	)
-	WHERE artist_name = ?
+	WHERE artist_norm = ?
 	`
-	_, err := d.db.Exec(q, artistName)
+	_, err := d.db.Exec(q, Normalize(artistName))
 	return err
 }
 
