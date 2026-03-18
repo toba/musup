@@ -20,6 +20,34 @@ func openTestDB(t *testing.T) *DB {
 	return db
 }
 
+// ensureArtist is a test helper that calls EnsureArtist and fails on error.
+func ensureArtist(t *testing.T, db *DB, name string) int64 {
+	t.Helper()
+	id, err := db.EnsureArtist(name)
+	if err != nil {
+		t.Fatalf("EnsureArtist(%q): %v", name, err)
+	}
+	return id
+}
+
+// upsertAlbum is a test helper that calls UpsertAlbum and fails on error.
+func upsertAlbum(t *testing.T, db *DB, artistID int64, a AlbumRecord) int64 {
+	t.Helper()
+	id, err := db.UpsertAlbum(artistID, a)
+	if err != nil {
+		t.Fatalf("UpsertAlbum(%q): %v", a.Title, err)
+	}
+	return id
+}
+
+// upsertTrack is a test helper that calls UpsertTrack and fails on error.
+func upsertTrack(t *testing.T, db *DB, albumID int64, tr TrackRecord) {
+	t.Helper()
+	if err := db.UpsertTrack(albumID, tr); err != nil {
+		t.Fatalf("UpsertTrack(%q): %v", tr.Title, err)
+	}
+}
+
 func TestOpenClose(t *testing.T) {
 	db := openTestDB(t)
 	if err := db.Close(); err != nil {
@@ -365,16 +393,15 @@ func TestMarkArtistNotFound_ClearedByUpsert(t *testing.T) {
 
 func TestUpsertAlbumAndQuery(t *testing.T) {
 	db := openTestDB(t)
+	artistID := ensureArtist(t, db, "Radiohead")
 
 	albums := []AlbumRecord{
-		{ArtistName: "Radiohead", Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
-		{ArtistName: "Radiohead", Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"},
-		{ArtistName: "Radiohead", Title: "A Moon Shaped Pool", MBID: "ccc", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
+		{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
+		{Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"},
+		{Title: "A Moon Shaped Pool", MBID: "ccc", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
 	}
 	for _, a := range albums {
-		if err := db.UpsertAlbum(a); err != nil {
-			t.Fatalf("UpsertAlbum: %v", err)
-		}
+		upsertAlbum(t, db, artistID, a)
 	}
 
 	got, err := db.Albums("Radiohead")
@@ -409,19 +436,25 @@ func TestMarkLocalTracks(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "Radiohead")
+	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+	kidID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A"})
+	amID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Amnesiac"})
+
 	// Insert tracks
-	tracks := []TrackRecord{
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Paranoid Android", Position: 2},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Subterranean Homesick Alien", Position: 3},
-		{ArtistName: "Radiohead", AlbumTitle: "Kid A", Title: "Everything in Its Right Place", Position: 1},
-		{ArtistName: "Radiohead", AlbumTitle: "Kid A", Title: "Kid A", Position: 2},
-		{ArtistName: "Radiohead", AlbumTitle: "Amnesiac", Title: "Packt Like Sardines in a Crushd Tin Box", Position: 1},
+	tracks := []struct {
+		albumID int64
+		tr      TrackRecord
+	}{
+		{okID, TrackRecord{Title: "Airbag", Position: 1}},
+		{okID, TrackRecord{Title: "Paranoid Android", Position: 2}},
+		{okID, TrackRecord{Title: "Subterranean Homesick Alien", Position: 3}},
+		{kidID, TrackRecord{Title: "Everything in Its Right Place", Position: 1}},
+		{kidID, TrackRecord{Title: "Kid A", Position: 2}},
+		{amID, TrackRecord{Title: "Packt Like Sardines in a Crushd Tin Box", Position: 1}},
 	}
-	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+	for _, tt := range tracks {
+		upsertTrack(t, db, tt.albumID, tt.tr)
 	}
 
 	if err := db.MarkLocalTracks("Radiohead"); err != nil {
@@ -471,18 +504,19 @@ func TestMarkLocalTracks_FuzzyTitle(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "3 Doors Down")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "The Better Life"})
+
 	// MusicBrainz tracks may have release-specific title variations
 	tracks := []TrackRecord{
-		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Kryptonite", Position: 3},         // exact match
-		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Loser (radio edit)", Position: 4}, // title differs, same position
-		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Be Like That", Position: 7},       // exact match
-		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "Duck and Run", Position: 5},       // not local
-		{ArtistName: "3 Doors Down", AlbumTitle: "The Better Life", Title: "By My Side", Position: 6},         // not local
+		{Title: "Kryptonite", Position: 3},         // exact match
+		{Title: "Loser (radio edit)", Position: 4}, // title differs, same position
+		{Title: "Be Like That", Position: 7},       // exact match
+		{Title: "Duck and Run", Position: 5},       // not local
+		{Title: "By My Side", Position: 6},         // not local
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
@@ -526,8 +560,6 @@ func TestMarkLocalTracks_TrackNumberOnly(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 
 	// Simulate files where tags had no title but scanner extracted track number
-	// from filename (e.g. "06 Somebody's Heaven.flac" → title parsed, track=6).
-	// This test covers the case where only track_number matches (title differs).
 	files := []FileRecord{
 		{Path: "a/06.flac", Size: 100, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 6, ScannedAt: now},
 		{Path: "a/11.flac", Size: 200, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 11, ScannedAt: now},
@@ -538,15 +570,16 @@ func TestMarkLocalTracks_TrackNumberOnly(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "10,000 Maniacs")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "The Earth Pressed Flat"})
+
 	tracks := []TrackRecord{
-		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Somebody's Heaven", Position: 6},
-		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Time Turns", Position: 11},
-		{ArtistName: "10,000 Maniacs", AlbumTitle: "The Earth Pressed Flat", Title: "Ellen", Position: 2},
+		{Title: "Somebody's Heaven", Position: 6},
+		{Title: "Time Turns", Position: 11},
+		{Title: "Ellen", Position: 2},
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("10,000 Maniacs"); err != nil {
@@ -580,12 +613,11 @@ func TestMarkLocalTracks_ClearsStale(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
+	artistID := ensureArtist(t, db, "A")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "X"})
+
 	// Insert a track and mark it local
-	if err := db.UpsertTrack(TrackRecord{
-		ArtistName: "A", AlbumTitle: "X", Title: "Song", Position: 1, Local: true,
-	}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	upsertTrack(t, db, albumID, TrackRecord{Title: "Song", Position: 1, Local: true})
 
 	// Remove the file (simulate library change)
 	if _, err := db.RemoveStaleFiles(map[string]struct{}{}); err != nil {
@@ -612,15 +644,16 @@ func TestMarkLocalTracks_ClearsStale(t *testing.T) {
 func TestUpsertTrackAndQuery(t *testing.T) {
 	db := openTestDB(t)
 
+	artistID := ensureArtist(t, db, "Radiohead")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+
 	tracks := []TrackRecord{
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Paranoid Android", Position: 2, MBID: "aaa", LengthMS: 383000},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, MBID: "bbb", LengthMS: 284000},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Lucky", Position: 3, MBID: "ccc", LengthMS: 258000},
+		{Title: "Paranoid Android", Position: 2, MBID: "aaa", LengthMS: 383000},
+		{Title: "Airbag", Position: 1, MBID: "bbb", LengthMS: 284000},
+		{Title: "Lucky", Position: 3, MBID: "ccc", LengthMS: 258000},
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	got, err := db.Tracks("Radiohead", "OK Computer")
@@ -645,20 +678,16 @@ func TestUpsertTrackAndQuery(t *testing.T) {
 func TestUpsertTrack_UpdatesOnConflict(t *testing.T) {
 	db := openTestDB(t)
 
-	tr := TrackRecord{
-		ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag",
-		Position: 1, MBID: "aaa", LengthMS: 284000,
-	}
-	if err := db.UpsertTrack(tr); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	artistID := ensureArtist(t, db, "Radiohead")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+
+	tr := TrackRecord{Title: "Airbag", Position: 1, MBID: "aaa", LengthMS: 284000}
+	upsertTrack(t, db, albumID, tr)
 
 	// Update position and length
 	tr.Position = 5
 	tr.LengthMS = 300000
-	if err := db.UpsertTrack(tr); err != nil {
-		t.Fatalf("UpsertTrack update: %v", err)
-	}
+	upsertTrack(t, db, albumID, tr)
 
 	got, err := db.Tracks("Radiohead", "OK Computer")
 	if err != nil {
@@ -678,28 +707,16 @@ func TestUpsertTrack_UpdatesOnConflict(t *testing.T) {
 func TestAlbumsWithTrackCounts(t *testing.T) {
 	db := openTestDB(t)
 
+	artistID := ensureArtist(t, db, "Radiohead")
+
 	// Create albums
-	albums := []AlbumRecord{
-		{ArtistName: "Radiohead", Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
-		{ArtistName: "Radiohead", Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"},
-	}
-	for _, a := range albums {
-		if err := db.UpsertAlbum(a); err != nil {
-			t.Fatalf("UpsertAlbum: %v", err)
-		}
-	}
+	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
 
 	// Add tracks to OK Computer (3 total, 2 local)
-	okTracks := []TrackRecord{
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, Local: true},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Paranoid Android", Position: 2, Local: true},
-		{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Lucky", Position: 3},
-	}
-	for _, tr := range okTracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
-	}
+	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
+	upsertTrack(t, db, okID, TrackRecord{Title: "Paranoid Android", Position: 2, Local: true})
+	upsertTrack(t, db, okID, TrackRecord{Title: "Lucky", Position: 3})
 
 	// Kid A has no tracks
 
@@ -818,25 +835,25 @@ func TestMigrationFromV0(t *testing.T) {
 	}
 	defer db.Close()
 
-	// Verify track_number column exists.
+	// Verify the new integer PK schema exists.
 	var colCount int
 	err = db.db.QueryRow(
-		"SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'track_number'",
+		"SELECT COUNT(*) FROM pragma_table_info('artists') WHERE name = 'id'",
 	).Scan(&colCount)
 	if err != nil {
-		t.Fatalf("check track_number column: %v", err)
+		t.Fatalf("check id column: %v", err)
 	}
 	if colCount != 1 {
-		t.Fatal("expected track_number column to exist after migration")
+		t.Fatal("expected id column on artists after migration")
 	}
 
-	// Verify user_version is 2.
+	// Verify user_version is 8.
 	var version int
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 7 {
-		t.Fatalf("expected user_version 7, got %d", version)
+	if version != 8 {
+		t.Fatalf("expected user_version 8, got %d", version)
 	}
 }
 
@@ -863,8 +880,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 7 {
-		t.Fatalf("expected user_version 7, got %d", version)
+	if version != 8 {
+		t.Fatalf("expected user_version 8, got %d", version)
 	}
 }
 
@@ -918,14 +935,15 @@ func TestMarkLocalTracks_NormalizedTitle(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "Beck")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Mellow Gold"})
+
 	tracks := []TrackRecord{
-		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser (radio edit)", Position: 1},
-		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Pay No Mind", Position: 2},
+		{Title: "Loser (radio edit)", Position: 1},
+		{Title: "Pay No Mind", Position: 2},
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("Beck"); err != nil {
@@ -964,13 +982,14 @@ func TestMarkLocalTracks_NormalizedAlbum(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "3 Doors Down")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Away from the Sun"})
+
 	tracks := []TrackRecord{
-		{ArtistName: "3 Doors Down", AlbumTitle: "Away from the Sun", Title: "When I'm Gone", Position: 1},
+		{Title: "When I'm Gone", Position: 1},
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
@@ -988,49 +1007,23 @@ func TestMarkLocalTracks_NormalizedAlbum(t *testing.T) {
 
 func TestKnownAlbumMBIDs(t *testing.T) {
 	db := openTestDB(t)
+	artistID := ensureArtist(t, db, "Radiohead")
 
 	// Album with tracks → should be in known set
-	if err := db.UpsertAlbum(AlbumRecord{
-		ArtistName: "Radiohead", Title: "OK Computer", MBID: "rg-okc", ReleaseDate: "1997-05-21", PrimaryType: "Album",
-	}); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
-	if err := db.UpsertTrack(TrackRecord{
-		ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, MBID: "tr-1",
-	}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer", MBID: "rg-okc", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, MBID: "tr-1"})
 
 	// Album without tracks → should NOT be in known set
-	if err := db.UpsertAlbum(AlbumRecord{
-		ArtistName: "Radiohead", Title: "Kid A", MBID: "rg-kida", ReleaseDate: "2000-10-02", PrimaryType: "Album",
-	}); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
+	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A", MBID: "rg-kida", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
 
 	// Album with empty MBID → should NOT be in known set
-	if err := db.UpsertAlbum(AlbumRecord{
-		ArtistName: "Radiohead", Title: "Amnesiac", MBID: "", ReleaseDate: "2001-06-05", PrimaryType: "Album",
-	}); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
-	if err := db.UpsertTrack(TrackRecord{
-		ArtistName: "Radiohead", AlbumTitle: "Amnesiac", Title: "Packt", Position: 1,
-	}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	amID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Amnesiac", MBID: "", ReleaseDate: "2001-06-05", PrimaryType: "Album"})
+	upsertTrack(t, db, amID, TrackRecord{Title: "Packt", Position: 1})
 
 	// Different artist → should not appear
-	if err := db.UpsertAlbum(AlbumRecord{
-		ArtistName: "Beck", Title: "Mellow Gold", MBID: "rg-mg", ReleaseDate: "1994-03-01", PrimaryType: "Album",
-	}); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
-	if err := db.UpsertTrack(TrackRecord{
-		ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1, MBID: "tr-2",
-	}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	beckID := ensureArtist(t, db, "Beck")
+	mgID := upsertAlbum(t, db, beckID, AlbumRecord{Title: "Mellow Gold", MBID: "rg-mg", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
+	upsertTrack(t, db, mgID, TrackRecord{Title: "Loser", Position: 1, MBID: "tr-2"})
 
 	known, err := db.KnownAlbumMBIDs("Radiohead")
 	if err != nil {
@@ -1065,14 +1058,15 @@ func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 		}
 	}
 
+	artistID := ensureArtist(t, db, "Beck")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Mellow Gold"})
+
 	tracks := []TrackRecord{
-		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1},
-		{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Pay No Mind", Position: 2},
+		{Title: "Loser", Position: 1},
+		{Title: "Pay No Mind", Position: 2},
 	}
 	for _, tr := range tracks {
-		if err := db.UpsertTrack(tr); err != nil {
-			t.Fatalf("UpsertTrack: %v", err)
-		}
+		upsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("Beck"); err != nil {
@@ -1141,7 +1135,7 @@ func TestGetSetMonitorStatus(t *testing.T) {
 
 	// Verify no duplicate rows exist.
 	var rowCount int
-	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists WHERE name = 'Test Artist'").Scan(&rowCount); err != nil {
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists WHERE name_norm = ?", Normalize("Test Artist")).Scan(&rowCount); err != nil {
 		t.Fatalf("count rows: %v", err)
 	}
 	if rowCount != 1 {
@@ -1207,17 +1201,14 @@ func TestFileChanged_SizeOnly(t *testing.T) {
 func TestAlbums_SecondaryTypes(t *testing.T) {
 	db := openTestDB(t)
 
-	album := AlbumRecord{
-		ArtistName:     "Radiohead",
+	artistID := ensureArtist(t, db, "Radiohead")
+	upsertAlbum(t, db, artistID, AlbumRecord{
 		Title:          "OK Computer OKNOTOK",
 		MBID:           "aaa",
 		ReleaseDate:    "2017-06-23",
 		PrimaryType:    "Album",
 		SecondaryTypes: "Compilation",
-	}
-	if err := db.UpsertAlbum(album); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
+	})
 
 	got, err := db.Albums("Radiohead")
 	if err != nil {
@@ -1244,13 +1235,11 @@ func TestTracks_LocalRoundTrip(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
+	artistID := ensureArtist(t, db, "Radiohead")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+
 	// Insert track with Local=true explicitly.
-	if err := db.UpsertTrack(TrackRecord{
-		ArtistName: "Radiohead", AlbumTitle: "OK Computer",
-		Title: "Airbag", Position: 1, Local: true,
-	}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	upsertTrack(t, db, albumID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
 
 	if err := db.MarkLocalTracks("Radiohead"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
@@ -1329,25 +1318,15 @@ func TestArtistSummaries_HasNew(t *testing.T) {
 	}
 
 	// Radiohead: catalog has albums from 1997 and 2016; local tracks on 1997 album only → HasNew = true
-	for _, a := range []AlbumRecord{
-		{ArtistName: "Radiohead", Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
-		{ArtistName: "Radiohead", Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
-	} {
-		if err := db.UpsertAlbum(a); err != nil {
-			t.Fatalf("UpsertAlbum: %v", err)
-		}
-	}
-	if err := db.UpsertTrack(TrackRecord{ArtistName: "Radiohead", AlbumTitle: "OK Computer", Title: "Airbag", Position: 1, Local: true}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	rhID := ensureArtist(t, db, "Radiohead")
+	okID := upsertAlbum(t, db, rhID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	upsertAlbum(t, db, rhID, AlbumRecord{Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
+	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
 
 	// Beck: catalog only has the album the user already has locally → HasNew = false
-	if err := db.UpsertAlbum(AlbumRecord{ArtistName: "Beck", Title: "Mellow Gold", MBID: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album"}); err != nil {
-		t.Fatalf("UpsertAlbum: %v", err)
-	}
-	if err := db.UpsertTrack(TrackRecord{ArtistName: "Beck", AlbumTitle: "Mellow Gold", Title: "Loser", Position: 1, Local: true}); err != nil {
-		t.Fatalf("UpsertTrack: %v", err)
-	}
+	beckID := ensureArtist(t, db, "Beck")
+	mgID := upsertAlbum(t, db, beckID, AlbumRecord{Title: "Mellow Gold", MBID: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
+	upsertTrack(t, db, mgID, TrackRecord{Title: "Loser", Position: 1, Local: true})
 
 	// Bjork: not synced (no albums/tracks in catalog) → HasNew = false
 
@@ -1424,6 +1403,47 @@ func TestArtistSummaries_MonitorField(t *testing.T) {
 	}
 }
 
+func TestAlbums_DeduplicatesArtistNameVariants(t *testing.T) {
+	db := openTestDB(t)
+
+	// With integer PKs, both name variants resolve to the same artist_id,
+	// so there's no duplication at the album level.
+	artistID := ensureArtist(t, db, "Asaf Avidan")
+
+	gsID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Gold Shadow", MBID: "aaa", ReleaseDate: "2015-01-26", PrimaryType: "Album"})
+	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Anagnorisis", MBID: "bbb", ReleaseDate: "2020-07-03", PrimaryType: "Album"})
+
+	// Calling EnsureArtist with a different casing returns the same ID
+	artistID2 := ensureArtist(t, db, "asaf avidan")
+	if artistID2 != artistID {
+		t.Fatalf("expected same artist ID for different casing, got %d vs %d", artistID, artistID2)
+	}
+
+	// Add tracks
+	upsertTrack(t, db, gsID, TrackRecord{Title: "Over My Head", Position: 1, Local: true})
+	upsertTrack(t, db, gsID, TrackRecord{Title: "My Old Pain", Position: 2})
+
+	got, err := db.Albums("Asaf Avidan")
+	if err != nil {
+		t.Fatalf("Albums: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique albums, got %d", len(got))
+	}
+
+	// Verify track counts are correct (not doubled)
+	for _, a := range got {
+		if a.Title == "Gold Shadow" {
+			if a.TotalTracks != 2 {
+				t.Errorf("Gold Shadow: expected 2 total tracks, got %d", a.TotalTracks)
+			}
+			if a.LocalTracks != 1 {
+				t.Errorf("Gold Shadow: expected 1 local track, got %d", a.LocalTracks)
+			}
+		}
+	}
+}
+
 func TestArtistSummaries_MergesByNorm(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
@@ -1465,5 +1485,215 @@ func TestArtistSummaries_MergesByNorm(t *testing.T) {
 	}
 	if s.AlbumCount != 3 {
 		t.Errorf("expected 3 albums (Dirt, Jar of Flies, Facelift), got %d", s.AlbumCount)
+	}
+}
+
+func TestEnsureArtist(t *testing.T) {
+	db := openTestDB(t)
+
+	// First call creates
+	id1, err := db.EnsureArtist("Radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	if id1 == 0 {
+		t.Fatal("expected non-zero ID")
+	}
+
+	// Second call with same name returns same ID
+	id2, err := db.EnsureArtist("Radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	if id2 != id1 {
+		t.Fatalf("expected same ID %d, got %d", id1, id2)
+	}
+
+	// Different casing returns same ID
+	id3, err := db.EnsureArtist("radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	if id3 != id1 {
+		t.Fatalf("expected same ID %d for different casing, got %d", id1, id3)
+	}
+}
+
+// TestTrackCounts_ConsistentBetweenSummariesAndAlbums verifies that the track
+// counts reported by ArtistSummaries match the per-album counts from Albums().
+// Regression test for #4qr-gn0: artist view showed tracks but album view showed zero.
+func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Seed a local file so the artist appears in summaries.
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now,
+		Artist: "Amy Lee", Album: "Recover", Title: "Use My Voice",
+		ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Create artist, album, and tracks via the ID-based API.
+	artistID := ensureArtist(t, db, "Amy Lee")
+	albumID := upsertAlbum(t, db, artistID, AlbumRecord{
+		Title: "Recover", MBID: "aaa", ReleaseDate: "2023-04-14", PrimaryType: "Album",
+	})
+	for i, title := range []string{"Use My Voice", "Blind Faith", "Love Exists"} {
+		upsertTrack(t, db, albumID, TrackRecord{Title: title, Position: i + 1})
+	}
+
+	// ArtistSummaries should report catalog tracks.
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+	if summaries[0].TotalTracks != 3 {
+		t.Fatalf("ArtistSummaries: expected 3 total tracks, got %d", summaries[0].TotalTracks)
+	}
+
+	// Albums should show the same total.
+	albums, err := db.Albums("Amy Lee")
+	if err != nil {
+		t.Fatalf("Albums: %v", err)
+	}
+	if len(albums) != 1 {
+		t.Fatalf("expected 1 album, got %d", len(albums))
+	}
+	if albums[0].TotalTracks != 3 {
+		t.Fatalf("Albums: expected 3 total tracks for %q, got %d", albums[0].Title, albums[0].TotalTracks)
+	}
+}
+
+func TestMigrationV7toV8_WithData(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	// Create a v7 database with data to test the migration
+	rawDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open raw db: %v", err)
+	}
+
+	// Set up v7 schema
+	const v7Schema = `
+	PRAGMA user_version = 7;
+	CREATE TABLE files (
+		path         TEXT PRIMARY KEY,
+		size         INTEGER NOT NULL,
+		mod_time     TEXT NOT NULL,
+		artist       TEXT NOT NULL,
+		album        TEXT NOT NULL DEFAULT '',
+		title        TEXT NOT NULL DEFAULT '',
+		track_number INTEGER NOT NULL DEFAULT 0,
+		scanned_at   TEXT NOT NULL,
+		title_norm   TEXT NOT NULL DEFAULT '',
+		album_norm   TEXT NOT NULL DEFAULT '',
+		artist_norm  TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE artists (
+		name            TEXT PRIMARY KEY,
+		mbid            TEXT NOT NULL DEFAULT '',
+		last_checked_at TEXT NOT NULL DEFAULT '',
+		latest_release  TEXT NOT NULL DEFAULT '',
+		latest_date     TEXT NOT NULL DEFAULT '',
+		not_found       INTEGER NOT NULL DEFAULT 0,
+		monitor         TEXT NOT NULL DEFAULT 'monitor',
+		name_norm       TEXT NOT NULL DEFAULT ''
+	);
+	CREATE TABLE albums (
+		artist_name     TEXT NOT NULL,
+		title           TEXT NOT NULL,
+		mbid            TEXT NOT NULL DEFAULT '',
+		release_date    TEXT NOT NULL DEFAULT '',
+		primary_type    TEXT NOT NULL DEFAULT '',
+		secondary_types TEXT NOT NULL DEFAULT '',
+		artist_norm     TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (artist_name, title)
+	);
+	CREATE TABLE tracks (
+		artist_name TEXT NOT NULL,
+		album_title TEXT NOT NULL,
+		title       TEXT NOT NULL,
+		position    INTEGER NOT NULL DEFAULT 0,
+		mbid        TEXT NOT NULL DEFAULT '',
+		length_ms   INTEGER NOT NULL DEFAULT 0,
+		local       INTEGER NOT NULL DEFAULT 0,
+		title_norm  TEXT NOT NULL DEFAULT '',
+		album_norm  TEXT NOT NULL DEFAULT '',
+		artist_norm TEXT NOT NULL DEFAULT '',
+		PRIMARY KEY (artist_name, album_title, title)
+	);
+	`
+	if _, err := rawDB.Exec(v7Schema); err != nil {
+		t.Fatalf("exec v7 schema: %v", err)
+	}
+
+	// Insert test data with name variants
+	if _, err := rawDB.Exec(`
+		INSERT INTO artists (name, mbid, name_norm, last_checked_at) VALUES
+			('Radiohead', 'mbid-rh', 'radiohead', '2024-01-01T00:00:00Z'),
+			('radiohead', '', 'radiohead', '');
+		INSERT INTO albums (artist_name, title, mbid, release_date, primary_type, artist_norm) VALUES
+			('Radiohead', 'OK Computer', 'aaa', '1997-05-21', 'Album', 'radiohead'),
+			('radiohead', 'OK Computer', 'aaa', '1997-05-21', 'Album', 'radiohead'),
+			('Radiohead', 'Kid A', 'bbb', '2000-10-02', 'Album', 'radiohead');
+		INSERT INTO tracks (artist_name, album_title, title, position, mbid, local, title_norm, album_norm, artist_norm) VALUES
+			('Radiohead', 'OK Computer', 'Airbag', 1, 'tr-1', 1, 'airbag', 'ok computer', 'radiohead'),
+			('Radiohead', 'OK Computer', 'Paranoid Android', 2, 'tr-2', 0, 'paranoid android', 'ok computer', 'radiohead');
+	`); err != nil {
+		t.Fatalf("insert v7 data: %v", err)
+	}
+	if err := rawDB.Close(); err != nil {
+		t.Fatalf("close raw db: %v", err)
+	}
+
+	// Open with migration
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	// Verify version
+	var version int
+	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatalf("read version: %v", err)
+	}
+	if version != 8 {
+		t.Fatalf("expected version 8, got %d", version)
+	}
+
+	// Verify deduplicated artists (both variants → 1 row)
+	var artistCount int
+	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists").Scan(&artistCount); err != nil {
+		t.Fatalf("count artists: %v", err)
+	}
+	if artistCount != 1 {
+		t.Fatalf("expected 1 artist after dedup, got %d", artistCount)
+	}
+
+	// Verify deduplicated albums (duplicate "OK Computer" → 1 row)
+	albums, err := db.Albums("Radiohead")
+	if err != nil {
+		t.Fatalf("Albums: %v", err)
+	}
+	if len(albums) != 2 {
+		t.Fatalf("expected 2 albums (OK Computer, Kid A), got %d", len(albums))
+	}
+
+	// Verify tracks survived
+	tracks, err := db.Tracks("Radiohead", "OK Computer")
+	if err != nil {
+		t.Fatalf("Tracks: %v", err)
+	}
+	if len(tracks) != 2 {
+		t.Fatalf("expected 2 tracks, got %d", len(tracks))
+	}
+	if !tracks[0].Local {
+		t.Error("expected Airbag to remain local after migration")
 	}
 }

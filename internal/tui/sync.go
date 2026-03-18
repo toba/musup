@@ -178,6 +178,13 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 
 	mbArtist := result.Artists[0]
 
+	// Resolve artist → ID
+	artistID, err := db.EnsureArtist(artist)
+	if err != nil {
+		ch <- syncDoneMsg{err: fmt.Errorf("ensure artist: %w", err)}
+		return
+	}
+
 	// Step 2: Fetch release groups
 	if ctx.Err() != nil {
 		ch <- syncDoneMsg{err: ctx.Err()}
@@ -221,14 +228,14 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	fetched := 0
 	for _, rg := range rgs {
 		// Always upsert the album metadata (cheap, keeps it fresh).
-		if err := db.UpsertAlbum(state.AlbumRecord{
-			ArtistName:     artist,
+		albumID, err := db.UpsertAlbum(artistID, state.AlbumRecord{
 			Title:          rg.Title,
 			MBID:           rg.ID,
 			ReleaseDate:    rg.FirstReleaseDate,
 			PrimaryType:    rg.PrimaryType,
 			SecondaryTypes: strings.Join(rg.SecondaryTypes, ","),
-		}); err != nil {
+		})
+		if err != nil {
 			ch <- syncDoneMsg{err: fmt.Errorf("upsert album: %w", err)}
 			return
 		}
@@ -265,13 +272,11 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 			rel := relResult.Releases[0]
 			for _, medium := range rel.Media {
 				for _, track := range medium.Tracks {
-					if err := db.UpsertTrack(state.TrackRecord{
-						ArtistName: artist,
-						AlbumTitle: rg.Title,
-						Title:      track.Recording.Title,
-						Position:   track.Position,
-						MBID:       track.Recording.ID,
-						LengthMS:   track.Recording.Length,
+					if err := db.UpsertTrack(albumID, state.TrackRecord{
+						Title:    track.Recording.Title,
+						Position: track.Position,
+						MBID:     track.Recording.ID,
+						LengthMS: track.Recording.Length,
 					}); err != nil {
 						ch <- syncDoneMsg{err: fmt.Errorf("upsert track: %w", err)}
 						return
@@ -290,11 +295,8 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	}
 
 	// Update artist record
-	if err := db.UpsertArtist(state.ArtistRecord{
-		Name: artist,
-		MBID: mbArtist.ID,
-	}); err != nil {
-		ch <- syncDoneMsg{err: fmt.Errorf("upsert artist: %w", err)}
+	if err := db.UpdateArtistMeta(artistID, mbArtist.ID); err != nil {
+		ch <- syncDoneMsg{err: fmt.Errorf("update artist: %w", err)}
 		return
 	}
 

@@ -6,6 +6,15 @@
 
 - Merge artists with names differing only by case or punctuation
 - Filter artist list to show only artists with newer albums than local
+- Highlight entire row when navigating artist list
+
+### 🐛 Fixes
+
+- Artist view shows track count but album view shows zero tracks
+
+### 🗜️ Tweaks
+
+- Refactor schema to use integer PKs instead of name-based composite keys
 
 ## Week of Mar 8 – Mar 14, 2026
 

@@ -100,7 +100,12 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	}
 	name += strings.Repeat(" ", max(0, nameCol-nameWidth))
 
-	line := cursor + statusInd + nameStyle.Render(name) + " " + mutedStyle.Render(trackStr) + "  " + mutedStyle.Render(albumStr)
+	colStyle := mutedStyle
+	if isSelected {
+		colStyle = lipgloss.NewStyle().Foreground(colorAccent)
+	}
+
+	line := cursor + statusInd + nameStyle.Render(name) + " " + colStyle.Render(trackStr) + "  " + colStyle.Render(albumStr)
 
 	_, _ = fmt.Fprint(w, line)
 }

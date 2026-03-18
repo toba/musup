@@ -23,6 +23,8 @@ type FileRecord struct {
 
 // AlbumRecord represents an album in the catalog (from MusicBrainz or local).
 type AlbumRecord struct {
+	ID             int64
+	ArtistID       int64
 	ArtistName     string
 	Title          string
 	MBID           string
@@ -35,6 +37,8 @@ type AlbumRecord struct {
 
 // TrackRecord represents a track in an album.
 type TrackRecord struct {
+	ID         int64
+	AlbumID    int64
 	ArtistName string
 	AlbumTitle string
 	Title      string
@@ -46,6 +50,7 @@ type TrackRecord struct {
 
 // ArtistRecord represents a tracked artist.
 type ArtistRecord struct {
+	ID            int64
 	Name          string
 	MBID          string
 	LastCheckedAt time.Time
@@ -227,8 +232,185 @@ func (d *DB) migrate() error {
 		version = 7
 	}
 
+	// Version 7 → 8: switch to integer PKs with foreign keys
+	if version < 8 {
+		if err := d.migrateToIntegerPKs(); err != nil {
+			return err
+		}
+		version = 8
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
+}
+
+func (d *DB) migrateToIntegerPKs() error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Step 1: Create artists_new, deduplicate by name_norm
+	if _, err := tx.Exec(`
+		CREATE TABLE artists_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			name            TEXT NOT NULL,
+			name_norm       TEXT NOT NULL UNIQUE,
+			mbid            TEXT NOT NULL DEFAULT '',
+			last_checked_at TEXT NOT NULL DEFAULT '',
+			latest_release  TEXT NOT NULL DEFAULT '',
+			latest_date     TEXT NOT NULL DEFAULT '',
+			not_found       INTEGER NOT NULL DEFAULT 0,
+			monitor         TEXT NOT NULL DEFAULT 'monitor'
+		);
+		INSERT INTO artists_new (name, name_norm, mbid, last_checked_at, latest_release, latest_date, not_found, monitor)
+		SELECT MAX(name), name_norm, MAX(mbid), MAX(last_checked_at), MAX(latest_release), MAX(latest_date), MAX(not_found), MAX(monitor)
+		FROM artists
+		WHERE name_norm != ''
+		GROUP BY name_norm;
+	`); err != nil {
+		return fmt.Errorf("migrate artists: %w", err)
+	}
+
+	// Step 2: Create albums_new — need Go-level Normalize for title_norm
+	if _, err := tx.Exec(`
+		CREATE TABLE albums_new (
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			artist_id       INTEGER NOT NULL REFERENCES artists_new(id),
+			title           TEXT NOT NULL,
+			title_norm      TEXT NOT NULL DEFAULT '',
+			mbid            TEXT NOT NULL DEFAULT '',
+			release_date    TEXT NOT NULL DEFAULT '',
+			primary_type    TEXT NOT NULL DEFAULT '',
+			secondary_types TEXT NOT NULL DEFAULT '',
+			UNIQUE (artist_id, title)
+		);
+	`); err != nil {
+		return fmt.Errorf("create albums_new: %w", err)
+	}
+
+	// Query old albums and insert into albums_new with computed title_norm
+	aRows, err := tx.Query(`
+		SELECT a.artist_norm, a.title, MAX(a.mbid), MAX(a.release_date), MAX(a.primary_type), MAX(a.secondary_types)
+		FROM albums a
+		WHERE a.artist_norm != ''
+		GROUP BY a.artist_norm, a.title
+	`)
+	if err != nil {
+		return fmt.Errorf("query old albums: %w", err)
+	}
+	type albumMigRow struct {
+		artistNorm, title, mbid, releaseDate, primaryType, secondaryTypes string
+	}
+	var albumRows []albumMigRow
+	for aRows.Next() {
+		var r albumMigRow
+		if err := aRows.Scan(&r.artistNorm, &r.title, &r.mbid, &r.releaseDate, &r.primaryType, &r.secondaryTypes); err != nil {
+			_ = aRows.Close()
+			return err
+		}
+		albumRows = append(albumRows, r)
+	}
+	_ = aRows.Close()
+	if err := aRows.Err(); err != nil {
+		return err
+	}
+
+	albumStmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO albums_new (artist_id, title, title_norm, mbid, release_date, primary_type, secondary_types)
+		SELECT an.id, ?, ?, ?, ?, ?, ?
+		FROM artists_new an WHERE an.name_norm = ?
+	`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = albumStmt.Close() }()
+
+	for _, r := range albumRows {
+		if _, err := albumStmt.Exec(r.title, Normalize(r.title), r.mbid, r.releaseDate, r.primaryType, r.secondaryTypes, r.artistNorm); err != nil {
+			return fmt.Errorf("insert album %q: %w", r.title, err)
+		}
+	}
+
+	// Step 3: Create tracks_new — need Go-level Normalize for title_norm
+	if _, err := tx.Exec(`
+		CREATE TABLE tracks_new (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			album_id   INTEGER NOT NULL REFERENCES albums_new(id),
+			title      TEXT NOT NULL,
+			title_norm TEXT NOT NULL DEFAULT '',
+			position   INTEGER NOT NULL DEFAULT 0,
+			mbid       TEXT NOT NULL DEFAULT '',
+			length_ms  INTEGER NOT NULL DEFAULT 0,
+			local      INTEGER NOT NULL DEFAULT 0,
+			UNIQUE (album_id, title_norm)
+		);
+	`); err != nil {
+		return fmt.Errorf("create tracks_new: %w", err)
+	}
+
+	// Query old tracks and insert into tracks_new
+	tRows, err := tx.Query(`
+		SELECT t.artist_norm, t.album_title, t.title, MAX(t.position), MAX(t.mbid), MAX(t.length_ms), MAX(t.local)
+		FROM tracks t
+		WHERE t.artist_norm != ''
+		GROUP BY t.artist_norm, t.album_title, t.title
+	`)
+	if err != nil {
+		return fmt.Errorf("query old tracks: %w", err)
+	}
+	type trackMigRow struct {
+		artistNorm, albumTitle, title, mbid string
+		position, lengthMS, local           int
+	}
+	var trackRows []trackMigRow
+	for tRows.Next() {
+		var r trackMigRow
+		if err := tRows.Scan(&r.artistNorm, &r.albumTitle, &r.title, &r.position, &r.mbid, &r.lengthMS, &r.local); err != nil {
+			_ = tRows.Close()
+			return err
+		}
+		trackRows = append(trackRows, r)
+	}
+	_ = tRows.Close()
+	if err := tRows.Err(); err != nil {
+		return err
+	}
+
+	trackStmt, err := tx.Prepare(`
+		INSERT OR IGNORE INTO tracks_new (album_id, title, title_norm, position, mbid, length_ms, local)
+		SELECT aln.id, ?, ?, ?, ?, ?, ?
+		FROM albums_new aln
+		JOIN artists_new an ON an.id = aln.artist_id
+		WHERE an.name_norm = ? AND aln.title = ?
+	`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = trackStmt.Close() }()
+
+	for _, r := range trackRows {
+		titleNorm := Normalize(r.title)
+		if _, err := trackStmt.Exec(r.title, titleNorm, r.position, r.mbid, r.lengthMS, r.local, r.artistNorm, r.albumTitle); err != nil {
+			return fmt.Errorf("insert track %q: %w", r.title, err)
+		}
+	}
+
+	// Step 4: Drop old tables, rename new ones
+	if _, err := tx.Exec(`
+		DROP TABLE tracks;
+		DROP TABLE albums;
+		DROP TABLE artists;
+		ALTER TABLE artists_new RENAME TO artists;
+		ALTER TABLE albums_new RENAME TO albums;
+		ALTER TABLE tracks_new RENAME TO tracks;
+		CREATE INDEX idx_albums_artist_id ON albums(artist_id);
+	`); err != nil {
+		return fmt.Errorf("swap tables: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 func (d *DB) addColumnIfMissing(table, column, colDef string) error {
@@ -536,26 +718,29 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	       COALESCE(a.monitor, 'monitor') AS monitor,
 	       COALESCE((
 	           SELECT 1 FROM albums a2
-	           WHERE a2.artist_norm = f.artist_norm
+	           JOIN artists ar2 ON ar2.id = a2.artist_id
+	           WHERE ar2.name_norm = f.artist_norm
 	             AND a2.release_date > COALESCE((
 	                 SELECT MAX(a3.release_date)
 	                 FROM albums a3
-	                 JOIN tracks t3 ON t3.artist_norm = a3.artist_norm
-	                                AND t3.album_title = a3.title
-	                 WHERE a3.artist_norm = f.artist_norm AND t3.local = 1
+	                 JOIN artists ar3 ON ar3.id = a3.artist_id
+	                 JOIN tracks t3 ON t3.album_id = a3.id
+	                 WHERE ar3.name_norm = f.artist_norm AND t3.local = 1
 	             ), '')
 	           LIMIT 1
 	       ), 0) AS has_new
 	FROM files f
 	LEFT JOIN artists a ON a.name_norm = f.artist_norm
 	LEFT JOIN (
-	    SELECT artist_norm, COUNT(*) AS total_albums
-	    FROM albums GROUP BY artist_norm
-	) al ON al.artist_norm = f.artist_norm
+	    SELECT ar.name_norm, COUNT(*) AS total_albums
+	    FROM albums al JOIN artists ar ON ar.id = al.artist_id
+	    GROUP BY ar.name_norm
+	) al ON al.name_norm = f.artist_norm
 	LEFT JOIN (
-	    SELECT artist_norm, COUNT(*) AS total_tracks
-	    FROM tracks GROUP BY artist_norm
-	) tr ON tr.artist_norm = f.artist_norm
+	    SELECT ar.name_norm, COUNT(*) AS total_tracks
+	    FROM tracks t JOIN albums abl ON abl.id = t.album_id JOIN artists ar ON ar.id = abl.artist_id
+	    GROUP BY ar.name_norm
+	) tr ON tr.name_norm = f.artist_norm
 	WHERE f.artist != ''
 	GROUP BY f.artist_norm
 	ORDER BY f.artist_norm
@@ -624,26 +809,32 @@ func (d *DB) LocalAlbums(artist string) ([]string, error) {
 	return albums, rows.Err()
 }
 
-// UpsertArtist inserts or updates an artist record.
-func (d *DB) UpsertArtist(a ArtistRecord) error {
-	const q = `
-	INSERT INTO artists (name, mbid, last_checked_at, latest_release, latest_date, not_found, name_norm)
-	VALUES (?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(name) DO UPDATE SET
-		mbid             = excluded.mbid,
-		last_checked_at  = excluded.last_checked_at,
-		latest_release   = excluded.latest_release,
-		latest_date      = excluded.latest_date,
-		not_found        = excluded.not_found,
-		name_norm        = excluded.name_norm
-	`
-	notFound := 0
-	if a.NotFound {
-		notFound = 1
+// EnsureArtist finds an artist by normalized name or creates one, returning the ID.
+func (d *DB) EnsureArtist(name string) (int64, error) {
+	norm := Normalize(name)
+	var id int64
+	err := d.db.QueryRow("SELECT id FROM artists WHERE name_norm = ?", norm).Scan(&id)
+	if err == nil {
+		return id, nil
 	}
-	_, err := d.db.Exec(q,
-		a.Name, a.MBID, a.LastCheckedAt.Format(time.RFC3339),
-		a.LatestRelease, a.LatestDate, notFound, Normalize(a.Name),
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+	res, err := d.db.Exec(
+		"INSERT INTO artists (name, name_norm) VALUES (?, ?)",
+		name, norm,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.LastInsertId()
+}
+
+// UpdateArtistMeta updates the MBID and last_checked_at for an artist.
+func (d *DB) UpdateArtistMeta(id int64, mbid string) error {
+	_, err := d.db.Exec(
+		"UPDATE artists SET mbid = ?, last_checked_at = ? WHERE id = ?",
+		mbid, time.Now().Format(time.RFC3339), id,
 	)
 	return err
 }
@@ -654,9 +845,9 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 	var lastChecked string
 	var notFound int
 	err := d.db.QueryRow(
-		"SELECT name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name_norm = ?",
+		"SELECT id, name, mbid, last_checked_at, latest_release, latest_date, not_found FROM artists WHERE name_norm = ?",
 		Normalize(name),
-	).Scan(&a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate, &notFound)
+	).Scan(&a.ID, &a.Name, &a.MBID, &lastChecked, &a.LatestRelease, &a.LatestDate, &notFound)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -670,51 +861,85 @@ func (d *DB) Artist(name string) (*ArtistRecord, error) {
 	return &a, nil
 }
 
-// MarkArtistNotFound upserts an artist with not_found = 1.
+// MarkArtistNotFound ensures an artist exists and sets not_found = 1.
 func (d *DB) MarkArtistNotFound(name string) error {
-	const q = `
-	INSERT INTO artists (name, not_found, name_norm)
-	VALUES (?, 1, ?)
-	ON CONFLICT(name) DO UPDATE SET
-		not_found = 1,
-		name_norm = excluded.name_norm
-	`
-	_, err := d.db.Exec(q, name, Normalize(name))
+	id, err := d.EnsureArtist(name)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec("UPDATE artists SET not_found = 1 WHERE id = ?", id)
 	return err
 }
 
-// UpsertAlbum inserts or updates an album record.
-func (d *DB) UpsertAlbum(a AlbumRecord) error {
+// UpsertArtist inserts or updates an artist record (kept for backward compat with tests).
+func (d *DB) UpsertArtist(a ArtistRecord) error {
+	id, err := d.EnsureArtist(a.Name)
+	if err != nil {
+		return err
+	}
+	notFound := 0
+	if a.NotFound {
+		notFound = 1
+	}
+	_, err = d.db.Exec(`
+		UPDATE artists SET
+			mbid = ?, last_checked_at = ?, latest_release = ?, latest_date = ?, not_found = ?
+		WHERE id = ?`,
+		a.MBID, a.LastCheckedAt.Format(time.RFC3339), a.LatestRelease, a.LatestDate, notFound, id,
+	)
+	return err
+}
+
+// UpsertAlbum inserts or updates an album record. Returns the album ID.
+func (d *DB) UpsertAlbum(artistID int64, a AlbumRecord) (int64, error) {
+	titleNorm := Normalize(a.Title)
 	const q = `
-	INSERT INTO albums (artist_name, title, mbid, release_date, primary_type, secondary_types, artist_norm)
+	INSERT INTO albums (artist_id, title, title_norm, mbid, release_date, primary_type, secondary_types)
 	VALUES (?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(artist_name, title) DO UPDATE SET
+	ON CONFLICT(artist_id, title) DO UPDATE SET
+		title_norm      = excluded.title_norm,
 		mbid            = excluded.mbid,
 		release_date    = excluded.release_date,
 		primary_type    = excluded.primary_type,
-		secondary_types = excluded.secondary_types,
-		artist_norm     = excluded.artist_norm
+		secondary_types = excluded.secondary_types
 	`
-	_, err := d.db.Exec(q, a.ArtistName, a.Title, a.MBID, a.ReleaseDate, a.PrimaryType, a.SecondaryTypes, Normalize(a.ArtistName))
-	return err
+	res, err := d.db.Exec(q, artistID, a.Title, titleNorm, a.MBID, a.ReleaseDate, a.PrimaryType, a.SecondaryTypes)
+	if err != nil {
+		return 0, err
+	}
+	albumID, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	// LastInsertId returns 0 on UPDATE (no new row). Look up the existing ID.
+	if albumID == 0 {
+		err = d.db.QueryRow(
+			"SELECT id FROM albums WHERE artist_id = ? AND title = ?", artistID, a.Title,
+		).Scan(&albumID)
+		if err != nil {
+			return 0, err
+		}
+	}
+	return albumID, nil
 }
 
 // Albums returns all albums for an artist with computed track counts,
 // ordered by release_date ASC then title ASC.
 func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 	const q = `
-	SELECT a.artist_name, a.title, a.mbid, a.release_date, a.primary_type,
-	       a.secondary_types, COALESCE(t.total, 0), COALESCE(t.local, 0)
-	FROM albums a
+	SELECT ar.name, al.title, al.mbid, al.release_date, al.primary_type,
+	       al.secondary_types, COALESCE(t.total, 0), COALESCE(t.local, 0)
+	FROM albums al
+	JOIN artists ar ON ar.id = al.artist_id
 	LEFT JOIN (
-		SELECT artist_name, album_title,
+		SELECT album_id,
 		       COUNT(*) AS total,
 		       SUM(local) AS local
 		FROM tracks
-		GROUP BY artist_name, album_title
-	) t ON t.artist_name = a.artist_name AND t.album_title = a.title
-	WHERE a.artist_norm = ?
-	ORDER BY a.release_date ASC, a.title ASC
+		GROUP BY album_id
+	) t ON t.album_id = al.id
+	WHERE ar.name_norm = ?
+	ORDER BY al.release_date ASC, al.title ASC
 	`
 	rows, err := d.db.Query(q, Normalize(artistName))
 	if err != nil {
@@ -735,37 +960,35 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 }
 
 // UpsertTrack inserts or updates a track record.
-func (d *DB) UpsertTrack(t TrackRecord) error {
+func (d *DB) UpsertTrack(albumID int64, t TrackRecord) error {
 	local := 0
 	if t.Local {
 		local = 1
 	}
+	titleNorm := Normalize(t.Title)
 	const q = `
-	INSERT INTO tracks (artist_name, album_title, title, position, mbid, length_ms, local, title_norm, album_norm, artist_norm)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	ON CONFLICT(artist_name, album_title, title) DO UPDATE SET
-		position    = excluded.position,
-		mbid        = excluded.mbid,
-		length_ms   = excluded.length_ms,
-		local       = excluded.local,
-		title_norm  = excluded.title_norm,
-		album_norm  = excluded.album_norm,
-		artist_norm = excluded.artist_norm
+	INSERT INTO tracks (album_id, title, title_norm, position, mbid, length_ms, local)
+	VALUES (?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(album_id, title_norm) DO UPDATE SET
+		title     = excluded.title,
+		position  = excluded.position,
+		mbid      = excluded.mbid,
+		length_ms = excluded.length_ms,
+		local     = excluded.local
 	`
-	_, err := d.db.Exec(q, t.ArtistName, t.AlbumTitle, t.Title, t.Position, t.MBID, t.LengthMS, local,
-		Normalize(t.Title), Normalize(t.AlbumTitle), Normalize(t.ArtistName))
+	_, err := d.db.Exec(q, albumID, t.Title, titleNorm, t.Position, t.MBID, t.LengthMS, local)
 	return err
 }
 
 // KnownAlbumMBIDs returns the set of album MBIDs for an artist that already
-// have tracks in the database. This allows callers to skip fetching track
-// listings from MusicBrainz for albums we already know about.
+// have tracks in the database.
 func (d *DB) KnownAlbumMBIDs(artistName string) (map[string]struct{}, error) {
 	const q = `
-	SELECT DISTINCT a.mbid
-	FROM albums a
-	JOIN tracks t ON t.artist_name = a.artist_name AND t.album_title = a.title
-	WHERE a.artist_norm = ? AND a.mbid != ''
+	SELECT DISTINCT al.mbid
+	FROM albums al
+	JOIN artists ar ON ar.id = al.artist_id
+	JOIN tracks t ON t.album_id = al.id
+	WHERE ar.name_norm = ? AND al.mbid != ''
 	`
 	rows, err := d.db.Query(q, Normalize(artistName))
 	if err != nil {
@@ -787,10 +1010,12 @@ func (d *DB) KnownAlbumMBIDs(artistName string) (map[string]struct{}, error) {
 // Tracks returns all tracks for an album, ordered by position.
 func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
 	const q = `
-	SELECT artist_name, album_title, title, position, mbid, length_ms, local
-	FROM tracks
-	WHERE artist_norm = ? AND album_title = ?
-	ORDER BY position ASC
+	SELECT ar.name, al.title, t.title, t.position, t.mbid, t.length_ms, t.local
+	FROM tracks t
+	JOIN albums al ON al.id = t.album_id
+	JOIN artists ar ON ar.id = al.artist_id
+	WHERE ar.name_norm = ? AND al.title = ?
+	ORDER BY t.position ASC
 	`
 	rows, err := d.db.Query(q, Normalize(artistName), albumTitle)
 	if err != nil {
@@ -845,27 +1070,24 @@ func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
 
 // SetMonitorStatus sets the monitor status for an artist, upserting the artists row.
 func (d *DB) SetMonitorStatus(artist string, status MonitorStatus) error {
-	const q = `
-	INSERT INTO artists (name, monitor, name_norm) VALUES (?, ?, ?)
-	ON CONFLICT(name) DO UPDATE SET
-		monitor   = excluded.monitor,
-		name_norm = excluded.name_norm
-	`
-	_, err := d.db.Exec(q, artist, string(status), Normalize(artist))
+	id, err := d.EnsureArtist(artist)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec("UPDATE artists SET monitor = ? WHERE id = ?", string(status), id)
 	return err
 }
 
 // MarkLocalTracks cross-references the files table to set local flag on tracks.
-// Uses normalized titles/albums for fuzzy matching, with two-tier logic:
-// Tier 1: same artist + normalized album + (normalized title OR track position)
-// Tier 2: same artist + normalized title (cross-album fallback)
 func (d *DB) MarkLocalTracks(artistName string) error {
 	const q = `
 	UPDATE tracks SET local = (
 		EXISTS (
 			SELECT 1 FROM files
-			WHERE files.artist_norm = tracks.artist_norm
-			  AND files.album_norm = tracks.album_norm
+			JOIN albums al ON al.id = tracks.album_id
+			JOIN artists ar ON ar.id = al.artist_id
+			WHERE files.artist_norm = ar.name_norm
+			  AND files.album_norm = al.title_norm
 			  AND (
 			    files.title_norm = tracks.title_norm
 			    OR (files.track_number > 0 AND files.track_number = tracks.position)
@@ -873,12 +1095,18 @@ func (d *DB) MarkLocalTracks(artistName string) error {
 		)
 		OR EXISTS (
 			SELECT 1 FROM files
-			WHERE files.artist_norm = tracks.artist_norm
+			JOIN albums al ON al.id = tracks.album_id
+			JOIN artists ar ON ar.id = al.artist_id
+			WHERE files.artist_norm = ar.name_norm
 			  AND files.title_norm != ''
 			  AND files.title_norm = tracks.title_norm
 		)
 	)
-	WHERE artist_norm = ?
+	WHERE album_id IN (
+		SELECT al.id FROM albums al
+		JOIN artists ar ON ar.id = al.artist_id
+		WHERE ar.name_norm = ?
+	)
 	`
 	_, err := d.db.Exec(q, Normalize(artistName))
 	return err
