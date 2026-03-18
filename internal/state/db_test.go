@@ -1521,7 +1521,7 @@ func TestEnsureArtist(t *testing.T) {
 
 // TestTrackCounts_ConsistentBetweenSummariesAndAlbums verifies that the track
 // counts reported by ArtistSummaries match the per-album counts from Albums().
-// Regression test for #4qr-gn0: artist view showed tracks but album view showed zero.
+// Regression test for #4qr-gn0 / #1lk-md3.
 func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
@@ -1535,16 +1535,36 @@ func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Create artist, album, and tracks via the ID-based API.
+	// Create artist with MBID (synced), album, and tracks.
+	if err := db.UpsertArtist(ArtistRecord{
+		Name: "Amy Lee", MBID: "mbid-amylee", LastCheckedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertArtist: %v", err)
+	}
 	artistID := ensureArtist(t, db, "Amy Lee")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{
+
+	// Album 1: has a track that matches local file
+	a1ID := upsertAlbum(t, db, artistID, AlbumRecord{
 		Title: "Recover", MBID: "aaa", ReleaseDate: "2023-04-14", PrimaryType: "Album",
 	})
 	for i, title := range []string{"Use My Voice", "Blind Faith", "Love Exists"} {
-		upsertTrack(t, db, albumID, TrackRecord{Title: title, Position: i + 1})
+		upsertTrack(t, db, a1ID, TrackRecord{Title: title, Position: i + 1})
 	}
 
-	// ArtistSummaries should report catalog tracks.
+	// Album 2: no matching local files at all
+	a2ID := upsertAlbum(t, db, artistID, AlbumRecord{
+		Title: "Dream Too Much", MBID: "bbb", ReleaseDate: "2016-09-30", PrimaryType: "Album",
+	})
+	for i, title := range []string{"I'm Not Tired", "Rubber Duckie"} {
+		upsertTrack(t, db, a2ID, TrackRecord{Title: title, Position: i + 1})
+	}
+
+	// Run MarkLocalTracks to set local flags
+	if err := db.MarkLocalTracks("Amy Lee"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	// ArtistSummaries local track count must equal sum of per-album local counts.
 	summaries, err := db.ArtistSummaries()
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
@@ -1552,20 +1572,23 @@ func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 summary, got %d", len(summaries))
 	}
-	if summaries[0].TotalTracks != 3 {
-		t.Fatalf("ArtistSummaries: expected 3 total tracks, got %d", summaries[0].TotalTracks)
+	if summaries[0].TotalTracks != 5 {
+		t.Fatalf("ArtistSummaries: expected 5 total tracks, got %d", summaries[0].TotalTracks)
 	}
 
-	// Albums should show the same total.
 	albums, err := db.Albums("Amy Lee")
 	if err != nil {
 		t.Fatalf("Albums: %v", err)
 	}
-	if len(albums) != 1 {
-		t.Fatalf("expected 1 album, got %d", len(albums))
+
+	albumLocalSum := 0
+	for _, a := range albums {
+		albumLocalSum += a.LocalTracks
 	}
-	if albums[0].TotalTracks != 3 {
-		t.Fatalf("Albums: expected 3 total tracks for %q, got %d", albums[0].Title, albums[0].TotalTracks)
+
+	if summaries[0].TrackCount != albumLocalSum {
+		t.Fatalf("ArtistSummaries.TrackCount (%d) != sum of album LocalTracks (%d)",
+			summaries[0].TrackCount, albumLocalSum)
 	}
 }
 

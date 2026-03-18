@@ -696,7 +696,7 @@ type ArtistSummary struct {
 	Name        string
 	AlbumCount  int           // local albums (from files)
 	NewestAlbum string        // kept for sort mode
-	TrackCount  int           // local tracks (from files)
+	TrackCount  int           // local tracks — from tracks.local when synced, else file count
 	TotalAlbums int           // catalog albums (from albums table, 0 if not synced)
 	TotalTracks int           // catalog tracks (from tracks table, 0 if not synced)
 	Synced      bool          // artist has MBID in artists table
@@ -728,7 +728,8 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	                 WHERE ar3.name_norm = f.artist_norm AND t3.local = 1
 	             ), '')
 	           LIMIT 1
-	       ), 0) AS has_new
+	       ), 0) AS has_new,
+	       COALESCE(lt.local_tracks, 0) AS local_tracks
 	FROM files f
 	LEFT JOIN artists a ON a.name_norm = f.artist_norm
 	LEFT JOIN (
@@ -741,6 +742,11 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	    FROM tracks t JOIN albums abl ON abl.id = t.album_id JOIN artists ar ON ar.id = abl.artist_id
 	    GROUP BY ar.name_norm
 	) tr ON tr.name_norm = f.artist_norm
+	LEFT JOIN (
+	    SELECT ar.name_norm, SUM(t.local) AS local_tracks
+	    FROM tracks t JOIN albums abl ON abl.id = t.album_id JOIN artists ar ON ar.id = abl.artist_id
+	    GROUP BY ar.name_norm
+	) lt ON lt.name_norm = f.artist_norm
 	WHERE f.artist != ''
 	GROUP BY f.artist_norm
 	ORDER BY f.artist_norm
@@ -755,14 +761,19 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	for rows.Next() {
 		var s ArtistSummary
 		var mbid, monitor string
-		var hasNew int
+		var hasNew, localTracks int
 		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
-			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor, &hasNew); err != nil {
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor, &hasNew, &localTracks); err != nil {
 			return nil, err
 		}
 		s.Synced = mbid != ""
 		s.Monitor = MonitorStatus(monitor)
 		s.HasNew = hasNew != 0
+		// For synced artists, use the tracks.local count so it matches
+		// the per-album local counts shown in the album detail view.
+		if s.Synced && s.TotalTracks > 0 {
+			s.TrackCount = localTracks
+		}
 		summaries = append(summaries, s)
 	}
 	return summaries, rows.Err()

@@ -11,6 +11,7 @@
 ### 🐛 Fixes
 
 - Artist view shows track count but album view shows zero tracks
+- Album detail shows 0 tracks despite artist summary showing track count
 
 ### 🗜️ Tweaks
 
