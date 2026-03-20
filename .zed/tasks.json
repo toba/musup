@@ -1,0 +1,7 @@
+[
+	{
+		"label": "Install",
+		"command": "scripts/install.sh",
+		"use_new_terminal": false
+	}
+]

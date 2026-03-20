@@ -55,19 +55,19 @@ func TestOpenClose(t *testing.T) {
 	}
 }
 
-func TestFileChanged_NewFile(t *testing.T) {
+func TestAllFileMeta_Empty(t *testing.T) {
 	db := openTestDB(t)
 
-	changed, err := db.FileChanged("artist/album/song.flac", 1000, time.Now())
+	m, err := db.AllFileMeta()
 	if err != nil {
-		t.Fatalf("FileChanged: %v", err)
+		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if !changed {
-		t.Fatal("expected new file to be marked as changed")
+	if len(m) != 0 {
+		t.Fatalf("expected empty map, got %d entries", len(m))
 	}
 }
 
-func TestFileChanged_Unchanged(t *testing.T) {
+func TestAllFileMeta_Unchanged(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -84,37 +84,50 @@ func TestFileChanged_Unchanged(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	changed, err := db.FileChanged(rec.Path, rec.Size, rec.ModTime)
+	m, err := db.AllFileMeta()
 	if err != nil {
-		t.Fatalf("FileChanged: %v", err)
+		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if changed {
-		t.Fatal("expected unchanged file not to be marked as changed")
+	fm, ok := m[rec.Path]
+	if !ok {
+		t.Fatal("expected file in map")
+	}
+	if fm.Size != rec.Size {
+		t.Fatalf("size: got %d, want %d", fm.Size, rec.Size)
+	}
+	if fm.ModTime != rec.ModTime.Format(time.RFC3339) {
+		t.Fatalf("mod_time: got %s, want %s", fm.ModTime, rec.ModTime.Format(time.RFC3339))
+	}
+	if fm.Title != "Song" {
+		t.Fatalf("title: got %q, want %q", fm.Title, "Song")
 	}
 }
 
-func TestFileChanged_Modified(t *testing.T) {
+func TestAllFileMeta_MultipleFiles(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	rec := FileRecord{
-		Path:      "artist/album/song.flac",
-		Size:      1000,
-		ModTime:   now,
-		Artist:    "Test",
-		Album:     "Album",
-		ScannedAt: now,
-	}
-	if err := db.UpsertFile(rec); err != nil {
-		t.Fatalf("UpsertFile: %v", err)
+	for i := range 3 {
+		rec := FileRecord{
+			Path:      fmt.Sprintf("artist/album/song%d.flac", i),
+			Size:      int64(1000 + i),
+			ModTime:   now,
+			Artist:    "Test",
+			Album:     "Album",
+			Title:     fmt.Sprintf("Song %d", i),
+			ScannedAt: now,
+		}
+		if err := db.UpsertFile(rec); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
 	}
 
-	changed, err := db.FileChanged(rec.Path, rec.Size, now.Add(time.Minute))
+	m, err := db.AllFileMeta()
 	if err != nil {
-		t.Fatalf("FileChanged: %v", err)
+		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if !changed {
-		t.Fatal("expected modified file to be marked as changed")
+	if len(m) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(m))
 	}
 }
 
@@ -1143,11 +1156,10 @@ func TestGetSetMonitorStatus(t *testing.T) {
 	}
 }
 
-func TestFileChanged_EmptyTitle(t *testing.T) {
+func TestAllFileMeta_EmptyTitle(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	// Insert a file with empty title (tags not extracted).
 	rec := FileRecord{
 		Path:      "artist/album/song.flac",
 		Size:      1000,
@@ -1161,40 +1173,13 @@ func TestFileChanged_EmptyTitle(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Same size and mtime but title is empty — should trigger re-scan.
-	changed, err := db.FileChanged(rec.Path, rec.Size, rec.ModTime)
+	m, err := db.AllFileMeta()
 	if err != nil {
-		t.Fatalf("FileChanged: %v", err)
+		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if !changed {
-		t.Fatal("expected FileChanged == true when stored title is empty")
-	}
-}
-
-func TestFileChanged_SizeOnly(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
-
-	rec := FileRecord{
-		Path:      "artist/album/song.flac",
-		Size:      1000,
-		ModTime:   now,
-		Artist:    "Test",
-		Album:     "Album",
-		Title:     "Song",
-		ScannedAt: now,
-	}
-	if err := db.UpsertFile(rec); err != nil {
-		t.Fatalf("UpsertFile: %v", err)
-	}
-
-	// Same mtime, different size — should be changed.
-	changed, err := db.FileChanged(rec.Path, rec.Size+1, rec.ModTime)
-	if err != nil {
-		t.Fatalf("FileChanged: %v", err)
-	}
-	if !changed {
-		t.Fatal("expected FileChanged == true when size differs")
+	fm := m[rec.Path]
+	if fm.Title != "" {
+		t.Fatalf("expected empty title, got %q", fm.Title)
 	}
 }
 

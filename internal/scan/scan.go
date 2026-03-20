@@ -39,6 +39,13 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 		return fmt.Errorf("resolve root: %w", err)
 	}
 
+	// Load all known file metadata up front for in-memory change detection
+	// instead of issuing one SQLite query per file during the walk.
+	knownFiles, err := db.AllFileMeta()
+	if err != nil {
+		return fmt.Errorf("load file metadata: %w", err)
+	}
+
 	livePaths := make(map[string]struct{})
 	var changed []changedFile
 
@@ -69,12 +76,11 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 			return nil //nolint:nilerr // skip files we can't stat
 		}
 
-		needsScan, err := db.FileChanged(relPath, info.Size(), info.ModTime())
-		if err != nil {
-			return fmt.Errorf("check changed %s: %w", relPath, err)
-		}
-		if !needsScan {
-			return nil
+		// In-memory change detection: check against pre-loaded map.
+		if fm, ok := knownFiles[relPath]; ok {
+			if fm.Title != "" && fm.Size == info.Size() && fm.ModTime == info.ModTime().Format(time.RFC3339) {
+				return nil
+			}
 		}
 
 		changed = append(changed, changedFile{

@@ -17,6 +17,7 @@
 ### 🗜️ Tweaks
 
 - Refactor schema to use integer PKs instead of name-based composite keys
+- Speed up startup; in-memory file change detection
 
 ## Week of Mar 8 – Mar 14, 2026
 

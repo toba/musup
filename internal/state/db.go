@@ -663,32 +663,32 @@ func (d *DB) UpsertFile(f FileRecord) error {
 	return err
 }
 
-// FileChanged reports whether a file at path needs re-scanning based on size and mtime.
-// Returns true if the file is new or has changed.
-func (d *DB) FileChanged(path string, size int64, modTime time.Time) (bool, error) {
-	var dbSize int64
-	var dbModTime string
-	var title string
+// FileMeta holds the stored metadata used for change detection.
+type FileMeta struct {
+	Size    int64
+	ModTime string
+	Title   string
+}
 
-	err := d.db.QueryRow("SELECT size, mod_time, title FROM files WHERE path = ?", path).
-		Scan(&dbSize, &dbModTime, &title)
-	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
-	}
+// AllFileMeta loads all file records into a map keyed by path for fast
+// in-memory change detection. This replaces per-file FileChanged queries.
+func (d *DB) AllFileMeta() (map[string]FileMeta, error) {
+	rows, err := d.db.Query("SELECT path, size, mod_time, title FROM files")
 	if err != nil {
-		return false, err
+		return nil, err
 	}
+	defer func() { _ = rows.Close() }()
 
-	// Re-scan if metadata was previously missing (empty title means tags
-	// weren't extracted, and we now have filename-based fallback).
-	if title == "" {
-		return true, nil
+	m := make(map[string]FileMeta)
+	for rows.Next() {
+		var path string
+		var fm FileMeta
+		if err := rows.Scan(&path, &fm.Size, &fm.ModTime, &fm.Title); err != nil {
+			return nil, err
+		}
+		m[path] = fm
 	}
-
-	if dbSize != size || dbModTime != modTime.Format(time.RFC3339) {
-		return true, nil
-	}
-	return false, nil
+	return m, rows.Err()
 }
 
 // ArtistSummary holds aggregate info for one artist.
