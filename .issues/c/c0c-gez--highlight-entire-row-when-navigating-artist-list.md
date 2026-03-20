@@ -1,15 +1,15 @@
 ---
 # c0c-gez
 title: Highlight entire row when navigating artist list
-status: review
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-18T19:12:49Z
-updated_at: 2026-03-18T19:42:22Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "29"
-        synced_at: "2026-03-18T19:45:06Z"
+        synced_at: "2026-03-20T21:31:29Z"
 ---
 
 When navigating the artist list, only the artist name text is highlighted. The entire row (including track count, album count columns) should be color-highlighted for better visibility.

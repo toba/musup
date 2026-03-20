@@ -6,7 +6,7 @@ todo:
     github:
       repo: toba/musup
 changelog: weekly
-packages: [brew, scoop]
+packages: [ brew, scoop ]
 citations:
   - repo: dhowden/tag
     branch: master

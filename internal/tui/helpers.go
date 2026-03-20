@@ -1,11 +1,12 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/spinner"
+	"charm.land/lipgloss/v2"
 	"github.com/toba/musup/internal/state"
 )
 
@@ -51,6 +52,60 @@ func ensureVisible(cursor, offset, height int) int {
 		offset = cursor - viewable + 1
 	}
 	return offset
+}
+
+func helpView(width, height int, bg string, fromView viewState) string {
+	type shortcut struct {
+		key  string
+		desc string
+	}
+
+	var shortcuts []shortcut
+	switch fromView {
+	case viewList:
+		shortcuts = []shortcut{
+			{"/", "Filter artists"},
+			{"n", "Toggle new releases filter"},
+			{"r", "Mark as reviewed"},
+			{"f", "Follow / unfollow"},
+			{"o", "Sort order"},
+			{"p", "Prune unfollowed artists"},
+			{"u", "Sync artist catalog"},
+			{"U", "Sync all followed artists"},
+			{"enter", "View artist detail"},
+			{"j/↓", "Move down"},
+			{"k/↑", "Move up"},
+			{"q", "Quit"},
+		}
+	case viewDetail:
+		shortcuts = []shortcut{
+			{"enter", "View album tracks"},
+			{"r", "Mark album reviewed"},
+			{"f", "Follow / unfollow artist"},
+			{"u", "Update artist catalog"},
+			{"j/↓", "Move down"},
+			{"k/↑", "Move up"},
+			{"esc", "Back to list"},
+			{"q", "Quit"},
+		}
+	case viewAlbumDetail:
+		shortcuts = []shortcut{
+			{"j/↓", "Move down"},
+			{"k/↑", "Move up"},
+			{"esc", "Back to artist"},
+			{"q", "Quit"},
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("Keyboard Shortcuts") + "\n\n")
+	for _, s := range shortcuts {
+		fmt.Fprintf(&b, "  %s  %s\n", mutedStyle.Render(fmt.Sprintf("%-7s", s.key)), s.desc)
+	}
+	b.WriteString("\n" + subtleStyle.Render("Press any key to dismiss"))
+
+	modal := modalStyle(34).Render(b.String())
+	return placeOverlay(width, height, modal, bg)
 }
 
 func summariesToItems(summaries []state.ArtistSummary) []artistItem {

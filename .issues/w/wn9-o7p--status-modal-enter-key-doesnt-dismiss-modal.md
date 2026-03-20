@@ -1,15 +1,15 @@
 ---
 # wn9-o7p
 title: Status modal enter key doesn't dismiss modal
-status: review
+status: completed
 type: bug
 priority: normal
 created_at: 2026-03-18T20:49:33Z
-updated_at: 2026-03-18T21:06:28Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "33"
-        synced_at: "2026-03-18T21:20:00Z"
+        synced_at: "2026-03-20T21:31:29Z"
 ---
 
 Pressing enter in the monitor status modal saves the selection but doesn't close the modal. Expected: enter saves and dismisses.

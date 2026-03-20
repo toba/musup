@@ -5,8 +5,8 @@ import (
 	"slices"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type sortMode int
@@ -35,7 +35,7 @@ func newSortModel(current sortMode) sortModel {
 }
 
 func (m sortModel) Update(msg tea.Msg) (sortModel, tea.Cmd) {
-	if msg, ok := msg.(tea.KeyMsg); ok {
+	if msg, ok := msg.(tea.KeyPressMsg); ok {
 		switch msg.String() {
 		case "j", "down":
 			m.cursor = (m.cursor + 1) % len(sortLabels)

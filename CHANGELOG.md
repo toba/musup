@@ -7,6 +7,12 @@
 - Merge artists with names differing only by case or punctuation
 - Filter artist list to show only artists with newer albums than local
 - Highlight entire row when navigating artist list
+- Add background task spinner in top-right corner
+- Update TUI footer help text; add help modal
+- Auto-sync when following an artist
+- Follow toggle runs background sync instead of modal
+- Add prune command to delete unfollowed artist catalog data
+- Mark artist as reviewed through a particular album
 
 ### 🐛 Fixes
 
@@ -15,6 +21,9 @@
 - Artist view shows track count but album view shows zero tracks
 - Album detail shows 0 tracks despite artist summary showing track count
 - Status modal enter key doesn't dismiss modal
+- Fix inconsistent local album count for synced artists
+- Filter `n` shortcut only shows followed artists with new releases
+- Fix column alignment in artist list
 
 ### 🗜️ Tweaks
 
@@ -24,6 +33,7 @@
 - Consolidate per-project Homebrew taps into single `toba/homebrew-tap`
 - Refactor schema to use integer PKs instead of name-based composite keys
 - Speed up startup; in-memory file change detection
+- Migrate TUI dependencies to v2 (`bubbletea`, `lipgloss`, `bubbles`)
 
 ## Week of Mar 8 – Mar 14, 2026
 

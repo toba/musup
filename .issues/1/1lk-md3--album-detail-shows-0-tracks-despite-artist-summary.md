@@ -1,15 +1,15 @@
 ---
 # 1lk-md3
 title: Album detail shows 0 tracks despite artist summary showing track count
-status: review
+status: completed
 type: bug
 priority: normal
 created_at: 2026-03-18T19:58:06Z
-updated_at: 2026-03-18T20:31:29Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "32"
-        synced_at: "2026-03-18T20:37:08Z"
+        synced_at: "2026-03-20T21:31:29Z"
 ---
 
 ArtistSummaries reports 1 track for Amy Lee but Albums() shows 0/10 and 0/12. The track count in ArtistSummaries comes from the files table (local tracks) while Albums() shows catalog tracks. The mismatch is that the artist summary's TotalTracks count is correct but the per-album track counts from Albums() are zero — meaning tracks exist in the DB but the JOIN isn't finding them.

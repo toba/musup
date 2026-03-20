@@ -6,9 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/state"
 )
@@ -27,11 +28,33 @@ type artistItem struct {
 
 func (i artistItem) FilterValue() string { return i.name }
 
-type artistDelegate struct{}
+// colWidths holds dynamic column widths shared between the list model and delegate.
+type colWidths struct {
+	trackNum int // max width of track number strings (e.g. "433/1010")
+	albumNum int // max width of album number strings (e.g. "2/105")
+}
+
+// syncState tracks which artists are currently syncing and provides a spinner.
+// Shared by pointer between listModel and artistDelegate so both see updates.
+type syncState struct {
+	artists map[string]bool
+	spinner spinner.Model
+}
+
+type artistDelegate struct {
+	widths *colWidths
+	sync   *syncState
+}
 
 func (d artistDelegate) Height() int                             { return 1 }
 func (d artistDelegate) Spacing() int                            { return 0 }
 func (d artistDelegate) Update(_ tea.Msg, _ *list.Model) tea.Cmd { return nil }
+
+// fixedWidth returns the total width of non-name columns.
+// cursor(2) + indicator(2) + gap(1) + trackNum + " tracks"(7) + gap(2) + albumNum + " albums"(7)
+func (d artistDelegate) fixedWidth() int {
+	return 2 + 2 + 1 + d.widths.trackNum + 7 + 2 + d.widths.albumNum + 7
+}
 
 func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.Item) {
 	ai, ok := item.(artistItem)
@@ -48,15 +71,15 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	// Status indicator: 2 chars — green if followed, dim otherwise
+	// Status indicator: 2 chars — spinner if syncing, green if followed, dim otherwise
 	var statusInd string
-	if ai.followed {
+	if d.sync != nil && d.sync.artists[ai.name] {
+		statusInd = d.sync.spinner.View() + " "
+	} else if ai.followed {
 		statusInd = localStyle.Render("• ")
 	} else {
 		statusInd = subtleStyle.Render("• ")
 	}
-
-	const numWidth = 7 // fits "xxx/yyy"
 
 	// Track column: right-align number, left-align noun
 	var trackNum string
@@ -69,7 +92,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if !ai.synced && ai.trackCount == 1 {
 		trackNoun = "track"
 	}
-	trackStr := fmt.Sprintf("%*s %-6s", numWidth, trackNum, trackNoun)
+	trackStr := fmt.Sprintf("%*s %-6s", d.widths.trackNum, trackNum, trackNoun)
 
 	// Album column: right-align number, left-align noun
 	var albumNum string
@@ -82,11 +105,10 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	if !ai.synced && ai.albumCount == 1 {
 		albumNoun = "album"
 	}
-	albumStr := fmt.Sprintf("%*s %-6s", numWidth, albumNum, albumNoun)
+	albumStr := fmt.Sprintf("%*s %-6s", d.widths.albumNum, albumNum, albumNoun)
 
 	// Dynamic name column: fill remaining space after fixed-width columns
-	// Fixed parts: cursor(2) + sync(2) + gap(1) + trackStr(14) + gap(2) + albumStr(14) = 35
-	nameCol := max(10, m.Width()-35)
+	nameCol := max(10, m.Width()-d.fixedWidth())
 
 	// Truncate or pad artist name to dynamic column width (rune-aware)
 	name := ai.name
@@ -107,10 +129,29 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 	_, _ = fmt.Fprint(w, line)
 }
 
+// computeColumnWidths returns the max track and album number string widths for the given items.
+func computeColumnWidths(items []artistItem) (trackNumWidth, albumNumWidth int) {
+	for _, ai := range items {
+		var tw, aw int
+		if ai.synced {
+			tw = len(fmt.Sprintf("%d/%d", ai.trackCount, ai.totalTracks))
+			aw = len(fmt.Sprintf("%d/%d", ai.albumCount, ai.totalAlbums))
+		} else {
+			tw = len(strconv.Itoa(ai.trackCount))
+			aw = len(strconv.Itoa(ai.albumCount))
+		}
+		trackNumWidth = max(trackNumWidth, tw)
+		albumNumWidth = max(albumNumWidth, aw)
+	}
+	return trackNumWidth, albumNumWidth
+}
+
 type listModel struct {
 	list     list.Model
 	db       *state.DB
 	allItems []artistItem
+	colW     *colWidths
+	sync     *syncState
 	sortMode sortMode
 	showNew  bool // filter to artists with newer catalog albums
 }
@@ -124,19 +165,27 @@ func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height i
 		listItems[i] = items[i]
 	}
 
-	l := list.New(listItems, artistDelegate{}, width, height-2)
+	tw, aw := computeColumnWidths(items)
+	cw := &colWidths{trackNum: tw, albumNum: aw}
+	syncSpinner := newSpinner()
+	syncSpinner.Style = lipgloss.NewStyle().Foreground(colorTeal)
+	ss := &syncState{
+		artists: make(map[string]bool),
+		spinner: syncSpinner,
+	}
+	l := list.New(listItems, artistDelegate{widths: cw, sync: ss}, width, height-2)
 	l.Title = fmt.Sprintf("musup — %d artists", len(items))
 	l.SetShowHelp(false)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = titleStyle
-	l.Styles.FilterPrompt = lipgloss.NewStyle().Foreground(colorAccent)
-	l.Styles.FilterCursor = lipgloss.NewStyle().Foreground(colorAccent)
 
 	return listModel{
 		list:     l,
 		db:       db,
 		allItems: items,
+		colW:     cw,
+		sync:     ss,
 	}
 }
 
@@ -144,7 +193,7 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.list.SetSize(msg.Width, msg.Height-2)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		// Don't intercept keys when filtering
 		if m.list.FilterState() == list.Filtering {
 			break
@@ -177,11 +226,11 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 					m.list.NewStatusMessage(errorStyle.Render(err.Error()))
 					return m, nil
 				}
-				label := "followed"
-				if !newFollowed {
-					label = "unfollowed"
+				if newFollowed {
+					artist := item.name
+					return m, func() tea.Msg { return startBgSyncMsg{artist: artist} }
 				}
-				m.list.NewStatusMessage(subtleStyle.Render(fmt.Sprintf("%s %s", item.name, label)))
+				m.list.NewStatusMessage(subtleStyle.Render(item.name + " unfollowed"))
 				return m, m.refreshCmd()
 			}
 		case "n":
@@ -193,8 +242,29 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 				m.list.NewStatusMessage(subtleStyle.Render("Showing all artists"))
 			}
 			return m, nil
+		case "r":
+			if item, ok := m.list.SelectedItem().(artistItem); ok {
+				if err := m.db.MarkReviewed(item.name); err != nil {
+					m.list.NewStatusMessage(errorStyle.Render(err.Error()))
+					return m, nil
+				}
+				m.list.NewStatusMessage(subtleStyle.Render(item.name + " marked as reviewed"))
+				return m, m.refreshCmd()
+			}
 		case "o":
 			return m, func() tea.Msg { return showSortMsg{} }
+		case "p":
+			var unfollowed int
+			for _, item := range m.allItems {
+				if !item.followed {
+					unfollowed++
+				}
+			}
+			if unfollowed == 0 {
+				m.list.NewStatusMessage(subtleStyle.Render("No unfollowed artists to prune"))
+				return m, nil
+			}
+			return m, m.startPruneCmd()
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -206,6 +276,18 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
 	return m, cmd
+}
+
+func (m *listModel) startSyncing(artist string) tea.Cmd {
+	m.sync.artists[artist] = true
+	if len(m.sync.artists) == 1 {
+		return m.sync.spinner.Tick
+	}
+	return nil
+}
+
+func (m *listModel) stopSyncing(artist string) {
+	delete(m.sync.artists, artist)
 }
 
 type refreshMsg struct {
@@ -226,6 +308,7 @@ func (m *listModel) refreshCmd() tea.Cmd {
 // refreshFrom updates the list with the given summaries (no DB call).
 func (m *listModel) refreshFrom(summaries []state.ArtistSummary) {
 	m.allItems = summariesToItems(summaries)
+	m.colW.trackNum, m.colW.albumNum = computeColumnWidths(m.allItems)
 	m.applySort()
 }
 
@@ -233,7 +316,7 @@ func (m *listModel) applySort() {
 	var filtered []artistItem
 	if m.showNew {
 		for _, item := range m.allItems {
-			if item.hasNew {
+			if item.followed && item.hasNew {
 				filtered = append(filtered, item)
 			}
 		}
@@ -262,8 +345,22 @@ func (m *listModel) updateTitle(count int) {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · f: follow · o: sort · u: sync · U: sync followed · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · r: reviewed · f: follow · o: sort · q: quit · ?: help"))
 	return b.String()
+}
+
+type startPruneMsg struct {
+	artists []string
+}
+
+func (m *listModel) startPruneCmd() tea.Cmd {
+	return func() tea.Msg {
+		names, err := m.db.UnfollowedArtistNames()
+		if err != nil || len(names) == 0 {
+			return nil
+		}
+		return startPruneMsg{artists: names}
+	}
 }
 
 type showDetailMsg struct{ artist string }

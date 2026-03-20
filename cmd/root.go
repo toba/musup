@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
 	"github.com/toba/musup/internal/state"
 	"github.com/toba/musup/internal/tui"
@@ -40,7 +40,7 @@ var rootCmd = &cobra.Command{
 		}
 		defer func() { _ = db.Close() }()
 
-		p := tea.NewProgram(tui.New(db, root, ver), tea.WithAltScreen())
+		p := tea.NewProgram(tui.New(db, root, ver))
 		if _, err := p.Run(); err != nil {
 			return err
 		}

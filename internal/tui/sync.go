@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/spinner"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
 )

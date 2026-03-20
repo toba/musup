@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
@@ -45,7 +45,7 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc", "backspace", "left":
 			return m, func() tea.Msg { return backToListMsg{} }
@@ -64,10 +64,23 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 			}
 		case "f":
 			followed, err := m.db.IsFollowed(m.artist)
-			if err == nil {
-				_ = m.db.SetFollowed(m.artist, !followed)
+			if err != nil {
+				return m, nil
+			}
+			newFollowed := !followed
+			if err := m.db.SetFollowed(m.artist, newFollowed); err != nil {
+				return m, nil
+			}
+			if newFollowed {
+				artist := m.artist
+				return m, func() tea.Msg { return startBgSyncMsg{artist: artist} }
 			}
 			return m, nil
+		case "r":
+			if err := m.db.MarkReviewed(m.artist); err != nil {
+				return m, nil
+			}
+			return m, func() tea.Msg { return backToListMsg{reviewed: true} }
 		case "u":
 			if m.mb != nil {
 				return m, func() tea.Msg { return startSyncMsg{artist: m.artist} }
@@ -128,7 +141,7 @@ func (m detailModel) View() string {
 		b.WriteString(mutedStyle.Render("No albums found."))
 	}
 
-	b.WriteString("\n" + subtleStyle.Render("esc: back · enter: tracks · f: follow · u: update catalog · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render("esc: back · r: reviewed · f: follow · q: quit · ?: help"))
 
 	return b.String()
 }
@@ -200,7 +213,9 @@ func (m detailModel) renderLocalAlbums(b *strings.Builder) {
 	}
 }
 
-type backToListMsg struct{}
+type backToListMsg struct {
+	reviewed bool
+}
 
 type showAlbumDetailMsg struct {
 	artist     string

@@ -1,15 +1,15 @@
 ---
 # ndi-9ob
 title: Add monitor status modal ('s' shortcut) for artists
-status: review
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-10T23:31:59Z
-updated_at: 2026-03-10T23:42:17Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "12"
-        synced_at: "2026-03-10T23:47:37Z"
+        synced_at: "2026-03-20T21:31:30Z"
 ---
 
 Add a monitor status picker modal triggered by 's' key in the list view. Statuses: monitor (always check), sometimes (default), ignore (never check).

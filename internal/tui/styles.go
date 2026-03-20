@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 var (
@@ -12,6 +12,7 @@ var (
 	colorSubtle = lipgloss.Color("#555555")
 	colorError  = lipgloss.Color("#FF5555")
 	colorLocal  = lipgloss.Color("#50FA7B")
+	colorTeal   = lipgloss.Color("#2DD4BF")
 
 	titleStyle = lipgloss.NewStyle().
 			Foreground(colorAccent).

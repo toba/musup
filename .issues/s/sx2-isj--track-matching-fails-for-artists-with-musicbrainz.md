@@ -1,15 +1,15 @@
 ---
 # sx2-isj
 title: Track matching fails for artists with MusicBrainz title variations
-status: review
+status: completed
 type: bug
 priority: normal
 created_at: 2026-03-10T22:40:01Z
-updated_at: 2026-03-10T22:43:32Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "6"
-        synced_at: "2026-03-10T22:51:35Z"
+        synced_at: "2026-03-20T21:31:31Z"
 ---
 
 ## Problem

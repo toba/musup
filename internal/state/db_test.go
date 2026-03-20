@@ -865,8 +865,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("expected user_version 9, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected user_version 10, got %d", version)
 	}
 }
 
@@ -893,8 +893,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("expected user_version 9, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected user_version 10, got %d", version)
 	}
 }
 
@@ -1665,8 +1665,8 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 9 {
-		t.Fatalf("expected version 9, got %d", version)
+	if version != 10 {
+		t.Fatalf("expected version 10, got %d", version)
 	}
 
 	// Verify deduplicated artists (both variants → 1 row)
@@ -1697,5 +1697,195 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	}
 	if !tracks[0].Local {
 		t.Error("expected Airbag to remain local after migration")
+	}
+}
+
+func TestPruneUnfollowed(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Create two artists with files, albums, and tracks.
+	for _, f := range []FileRecord{
+		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Kept", Album: "A", Title: "T1", ScannedAt: now},
+		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Pruned", Album: "B", Title: "T2", ScannedAt: now},
+	} {
+		if err := db.UpsertFile(f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	keptID := ensureArtist(t, db, "Kept")
+	prunedID := ensureArtist(t, db, "Pruned")
+
+	kaID := upsertAlbum(t, db, keptID, AlbumRecord{Title: "A", MBID: "aaa"})
+	upsertTrack(t, db, kaID, TrackRecord{Title: "T1", Position: 1})
+
+	paID := upsertAlbum(t, db, prunedID, AlbumRecord{Title: "B", MBID: "bbb"})
+	upsertTrack(t, db, paID, TrackRecord{Title: "T2", Position: 1})
+	upsertTrack(t, db, paID, TrackRecord{Title: "T3", Position: 2})
+
+	// Unfollow "Pruned".
+	if err := db.SetFollowed("Pruned", false); err != nil {
+		t.Fatalf("SetFollowed: %v", err)
+	}
+
+	// Verify unfollowed names.
+	names, err := db.UnfollowedArtistNames()
+	if err != nil {
+		t.Fatalf("UnfollowedArtistNames: %v", err)
+	}
+	if len(names) != 1 || names[0] != "Pruned" {
+		t.Fatalf("expected [Pruned], got %v", names)
+	}
+
+	// Prune.
+	result, err := db.PruneUnfollowed()
+	if err != nil {
+		t.Fatalf("PruneUnfollowed: %v", err)
+	}
+	if result.Artists != 1 {
+		t.Errorf("expected 1 artist pruned, got %d", result.Artists)
+	}
+	if result.Albums != 1 {
+		t.Errorf("expected 1 album pruned, got %d", result.Albums)
+	}
+	if result.Tracks != 2 {
+		t.Errorf("expected 2 tracks pruned, got %d", result.Tracks)
+	}
+
+	// Kept artist should still exist.
+	albums, err := db.Albums("Kept")
+	if err != nil {
+		t.Fatalf("Albums: %v", err)
+	}
+	if len(albums) != 1 {
+		t.Fatalf("expected 1 album for Kept, got %d", len(albums))
+	}
+
+	// Pruned artist should be gone.
+	artist, err := db.Artist("Pruned")
+	if err != nil {
+		t.Fatalf("Artist: %v", err)
+	}
+	if artist != nil {
+		t.Fatal("expected Pruned artist to be deleted")
+	}
+
+	// Files should be unaffected.
+	meta, err := db.AllFileMeta()
+	if err != nil {
+		t.Fatalf("AllFileMeta: %v", err)
+	}
+	if len(meta) != 2 {
+		t.Fatalf("expected 2 files preserved, got %d", len(meta))
+	}
+}
+
+func TestMarkReviewed(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Seed a local file so Radiohead appears in ArtistSummaries.
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now,
+		Artist: "Radiohead", Album: "OK Computer", Title: "Airbag", ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Set up catalog: local tracks on 1997 album, newer album in 2016.
+	rhID := ensureArtist(t, db, "Radiohead")
+	okID := upsertAlbum(t, db, rhID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	upsertAlbum(t, db, rhID, AlbumRecord{Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
+	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
+
+	// Before review: HasNew should be true (2016 > 1997).
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if !summaries[0].HasNew {
+		t.Fatal("expected HasNew=true before MarkReviewed")
+	}
+
+	// Mark as reviewed (sets reviewed_at to 2016-05-08).
+	if err := db.MarkReviewed("Radiohead"); err != nil {
+		t.Fatalf("MarkReviewed: %v", err)
+	}
+
+	// After review: HasNew should be false.
+	summaries, err = db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if summaries[0].HasNew {
+		t.Fatal("expected HasNew=false after MarkReviewed")
+	}
+
+	// Add a newer album — HasNew should become true again.
+	upsertAlbum(t, db, rhID, AlbumRecord{Title: "New Album", MBID: "ccc", ReleaseDate: "2025-01-01", PrimaryType: "Album"})
+	summaries, err = db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if !summaries[0].HasNew {
+		t.Fatal("expected HasNew=true after adding album newer than reviewed_at")
+	}
+}
+
+func TestArtistSummaries_LocalAlbumCountConsistentWithTracks(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().Truncate(time.Second)
+
+	// Local file is on a compilation album ("Festivus") not in the catalog.
+	if err := db.UpsertFile(FileRecord{
+		Path: "a/1.flac", Size: 100, ModTime: now,
+		Artist: "Alphabet Backwards", Album: "Festivus", Title: "Dearest Santa",
+		TrackNumber: 6, ScannedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Catalog has two albums, neither matching the local file's album.
+	artistID := ensureArtist(t, db, "Alphabet Backwards")
+	if err := db.UpsertArtist(ArtistRecord{
+		Name: "Alphabet Backwards", MBID: "mbid-ab", LastCheckedAt: now,
+	}); err != nil {
+		t.Fatalf("UpsertArtist: %v", err)
+	}
+
+	a1ID := upsertAlbum(t, db, artistID, AlbumRecord{
+		Title: "Little Victories", MBID: "aaa", ReleaseDate: "2012-10-01", PrimaryType: "Album",
+	})
+	a2ID := upsertAlbum(t, db, artistID, AlbumRecord{
+		Title: "Friends, Lovers & Empty Beds", MBID: "bbb", ReleaseDate: "2018", PrimaryType: "Album",
+	})
+	for i := range 12 {
+		upsertTrack(t, db, a1ID, TrackRecord{Title: fmt.Sprintf("Track %d", i+1), Position: i + 1})
+	}
+	for i := range 11 {
+		upsertTrack(t, db, a2ID, TrackRecord{Title: fmt.Sprintf("Track %d", i+13), Position: i + 1})
+	}
+
+	if err := db.MarkLocalTracks("Alphabet Backwards"); err != nil {
+		t.Fatalf("MarkLocalTracks: %v", err)
+	}
+
+	summaries, err := db.ArtistSummaries()
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+
+	s := summaries[0]
+	// Bug: TrackCount was 0 (from tracks.local) even though the artist has a local file.
+	// File-based counts should be the floor — the artist has 1 file on 1 album.
+	if s.TrackCount < 1 {
+		t.Fatalf("expected at least 1 local track (from files), got %d", s.TrackCount)
+	}
+	if s.AlbumCount < 1 {
+		t.Fatalf("expected at least 1 local album (from files), got %d", s.AlbumCount)
 	}
 }

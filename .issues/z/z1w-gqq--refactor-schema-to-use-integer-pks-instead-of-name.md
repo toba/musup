@@ -1,15 +1,15 @@
 ---
 # z1w-gqq
 title: Refactor schema to use integer PKs instead of name-based composite keys
-status: review
+status: completed
 type: task
 priority: normal
 created_at: 2026-03-18T19:13:32Z
-updated_at: 2026-03-18T19:29:16Z
+updated_at: 2026-03-20T20:41:03Z
 sync:
     github:
         issue_number: "28"
-        synced_at: "2026-03-18T19:45:06Z"
+        synced_at: "2026-03-20T21:31:30Z"
 ---
 
 The current schema uses composite text PKs like `(artist_name, title)` for albums and `(artist_name, album_title, title)` for tracks. This causes bugs when the same entity is inserted under different name variants (e.g., different casing), since the PK treats them as distinct rows even though they normalize to the same value.

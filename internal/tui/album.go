@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/state"
 )
@@ -36,7 +36,7 @@ func (m albumDetailModel) Update(msg tea.Msg) (albumDetailModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.height = msg.Height
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		switch msg.String() {
 		case "esc", "backspace", "left":
 			return m, func() tea.Msg { return backToDetailMsg{} }
@@ -80,13 +80,13 @@ func (m albumDetailModel) View() string {
 
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(m.err.Error()))
-		b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit"))
+		b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit · ?: help"))
 		return b.String()
 	}
 
 	if len(m.tracks) == 0 {
 		b.WriteString(mutedStyle.Render("No tracks found."))
-		b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit"))
+		b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit · ?: help"))
 		return b.String()
 	}
 
@@ -122,7 +122,7 @@ func (m albumDetailModel) View() string {
 		b.WriteString(cursor + mutedStyle.Render(num) + "  " + style.Render(name) + "  " + owned + "\n")
 	}
 
-	b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render("esc: back · q: quit · ?: help"))
 
 	return b.String()
 }

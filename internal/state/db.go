@@ -251,6 +251,14 @@ func (d *DB) migrate() error {
 		version = 9
 	}
 
+	// Version 9 → 10: add reviewed_at to artists for tracking reviewed-through point
+	if version < 10 {
+		if err := d.addColumnIfMissing("artists", "reviewed_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		version = 10
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -747,7 +755,8 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	  track_counts AS (
 	    SELECT ar.name_norm,
 	           COUNT(*) AS total_tracks,
-	           SUM(t.local) AS local_tracks
+	           SUM(t.local) AS local_tracks,
+	           COUNT(DISTINCT CASE WHEN t.local = 1 THEN al.id END) AS local_albums
 	    FROM tracks t
 	    JOIN albums al ON al.id = t.album_id
 	    JOIN artists ar ON ar.id = al.artist_id
@@ -766,7 +775,7 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	    FROM albums al
 	    JOIN artists ar ON ar.id = al.artist_id
 	    LEFT JOIN max_local_date mld ON mld.name_norm = ar.name_norm
-	    WHERE al.release_date > COALESCE(mld.max_date, '')
+	    WHERE al.release_date > MAX(COALESCE(mld.max_date, ''), COALESCE(ar.reviewed_at, ''))
 	    GROUP BY ar.name_norm
 	  )
 	SELECT dn.name,
@@ -778,7 +787,8 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	       COALESCE(tc.total_tracks, 0) AS total_tracks,
 	       COALESCE(a.followed, 1) AS followed,
 	       CASE WHEN hn.name_norm IS NOT NULL THEN 1 ELSE 0 END AS has_new,
-	       COALESCE(tc.local_tracks, 0) AS local_tracks
+	       COALESCE(tc.local_tracks, 0) AS local_tracks,
+	       COALESCE(tc.local_albums, 0) AS local_albums
 	FROM file_stats fs
 	JOIN display_names dn ON dn.artist_norm = fs.artist_norm
 	LEFT JOIN artists a ON a.name_norm = fs.artist_norm
@@ -797,18 +807,20 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	for rows.Next() {
 		var s ArtistSummary
 		var mbid string
-		var followed, hasNew, localTracks int
+		var followed, hasNew, localTracks, localAlbums int
 		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
-			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &followed, &hasNew, &localTracks); err != nil {
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &followed, &hasNew, &localTracks, &localAlbums); err != nil {
 			return nil, err
 		}
 		s.Synced = mbid != ""
 		s.Followed = followed != 0
 		s.HasNew = hasNew != 0
-		// For synced artists, use the tracks.local count so it matches
-		// the per-album local counts shown in the album detail view.
+		// For synced artists, prefer catalog-matched local counts when they
+		// are higher (accounts for fuzzy matching), but never go below the
+		// file-based counts — the files table proves those tracks exist.
 		if s.Synced && s.TotalTracks > 0 {
-			s.TrackCount = localTracks
+			s.TrackCount = max(s.TrackCount, localTracks)
+			s.AlbumCount = max(s.AlbumCount, localAlbums)
 		}
 		summaries = append(summaries, s)
 	}
@@ -1110,6 +1122,21 @@ func (d *DB) SetFollowed(artist string, followed bool) error {
 	return err
 }
 
+// MarkReviewed sets the reviewed_at date for an artist to the latest album
+// release date in the catalog. This marks all current albums as "seen."
+func (d *DB) MarkReviewed(artistName string) error {
+	id, err := d.EnsureArtist(artistName)
+	if err != nil {
+		return err
+	}
+	_, err = d.db.Exec(`
+		UPDATE artists SET reviewed_at = COALESCE(
+			(SELECT MAX(al.release_date) FROM albums al WHERE al.artist_id = ?),
+			''
+		) WHERE id = ?`, id, id)
+	return err
+}
+
 // MarkLocalTracks cross-references the files table to set local flag on tracks.
 func (d *DB) MarkLocalTracks(artistName string) error {
 	const q = `
@@ -1192,4 +1219,79 @@ func (d *DB) RemoveStaleFiles(livePaths map[string]struct{}) (int64, error) {
 		removed += n
 	}
 	return removed, tx.Commit()
+}
+
+// PruneResult holds counts from a prune operation.
+type PruneResult struct {
+	Artists int64
+	Albums  int64
+	Tracks  int64
+}
+
+// UnfollowedArtistNames returns the names of all unfollowed artists.
+func (d *DB) UnfollowedArtistNames() ([]string, error) {
+	rows, err := d.db.Query("SELECT name FROM artists WHERE followed = 0")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		names = append(names, name)
+	}
+	return names, rows.Err()
+}
+
+// PruneUnfollowed deletes albums, tracks, and artist records for all
+// unfollowed artists. Files are not affected.
+func (d *DB) PruneUnfollowed() (PruneResult, error) {
+	var r PruneResult
+
+	tx, err := d.db.Begin()
+	if err != nil {
+		return r, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Delete tracks for unfollowed artists.
+	res, err := tx.Exec(`
+		DELETE FROM tracks WHERE album_id IN (
+			SELECT al.id FROM albums al
+			JOIN artists ar ON ar.id = al.artist_id
+			WHERE ar.followed = 0
+		)`)
+	if err != nil {
+		return r, err
+	}
+	r.Tracks, _ = res.RowsAffected()
+
+	// Delete albums for unfollowed artists.
+	res, err = tx.Exec(`
+		DELETE FROM albums WHERE artist_id IN (
+			SELECT id FROM artists WHERE followed = 0
+		)`)
+	if err != nil {
+		return r, err
+	}
+	r.Albums, _ = res.RowsAffected()
+
+	// Delete the artist records themselves.
+	res, err = tx.Exec("DELETE FROM artists WHERE followed = 0")
+	if err != nil {
+		return r, err
+	}
+	r.Artists, _ = res.RowsAffected()
+
+	return r, tx.Commit()
+}
+
+// Vacuum runs VACUUM on the database to reclaim space.
+func (d *DB) Vacuum() error {
+	_, err := d.db.Exec("VACUUM")
+	return err
 }
