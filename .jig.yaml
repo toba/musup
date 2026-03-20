@@ -1,46 +1,44 @@
 todo:
-    path: .issues
-    default_status: draft
-    default_type: task
-    sync:
-        github:
-            repo: toba/musup
+  path: .issues
+  default_status: draft
+  default_type: task
+  sync:
+    github:
+      repo: toba/musup
 changelog: weekly
-companions:
-    brew: https://github.com/toba/homebrew-tap.git
-    scoop: toba/scoop-bucket
+packages: [brew, scoop]
 citations:
-    - repo: dhowden/tag
-      branch: master
-      notes: ID3, MP4 and OGG/FLAC metadata parsing in Go
-      paths:
-        high: ['**/*.go']
-        medium: [go.mod, go.sum]
-        low: [.github/**, README.md, LICENSE]
-    - repo: michiwend/gomusicbrainz
-      branch: master
-      notes: a Go (Golang) MusicBrainz WS2 client library - work in progress
-      paths:
-        high: ['**/*.go']
-        low: [.github/**, README.md, LICENSE]
-    - repo: charmbracelet/lipgloss
-      branch: main
-      notes: "Style definitions for nice terminal layouts \U0001F444"
-      paths:
-        high: ['**/*.go']
-        medium: [go.mod, go.sum]
-        low: [.github/**, README.md, LICENSE]
-    - repo: charmbracelet/bubbletea
-      branch: main
-      notes: "A powerful little TUI framework \U0001F3D7"
-      paths:
-        high: ['**/*.go']
-        medium: [go.mod, go.sum]
-        low: [.github/**, README.md, LICENSE]
-    - repo: charmbracelet/bubbles
-      branch: main
-      notes: "TUI components for Bubble Tea \U0001FAE7"
-      paths:
-        high: ['**/*.go']
-        medium: [go.mod, go.sum]
-        low: [.github/**, README.md, LICENSE]
+  - repo: dhowden/tag
+    branch: master
+    notes: ID3, MP4 and OGG/FLAC metadata parsing in Go
+    paths:
+      high: [ '**/*.go' ]
+      medium: [ go.mod, go.sum ]
+      low: [ .github/**, README.md, LICENSE ]
+  - repo: michiwend/gomusicbrainz
+    branch: master
+    notes: a Go (Golang) MusicBrainz WS2 client library - work in progress
+    paths:
+      high: [ '**/*.go' ]
+      low: [ .github/**, README.md, LICENSE ]
+  - repo: charmbracelet/lipgloss
+    branch: main
+    notes: "Style definitions for nice terminal layouts"
+    paths:
+      high: [ '**/*.go' ]
+      medium: [ go.mod, go.sum ]
+      low: [ .github/**, README.md, LICENSE ]
+  - repo: charmbracelet/bubbletea
+    branch: main
+    notes: "A powerful little TUI framework"
+    paths:
+      high: [ '**/*.go' ]
+      medium: [ go.mod, go.sum ]
+      low: [ .github/**, README.md, LICENSE ]
+  - repo: charmbracelet/bubbles
+    branch: main
+    notes: "TUI components for Bubble Tea"
+    paths:
+      high: [ '**/*.go' ]
+      medium: [ go.mod, go.sum ]
+      low: [ .github/**, README.md, LICENSE ]
