@@ -11,7 +11,7 @@ Built on [dhowden/tag](https://github.com/dhowden/tag) for metadata parsing and 
 ### Homebrew (macOS)
 
 ```
-brew install toba/musup/musup
+brew install toba/tap/musup
 ```
 
 ### Scoop (Windows)
@@ -47,7 +47,7 @@ That's it. The TUI takes over from there.
 | `s` | Set monitor status — *monitor*, *sometimes*, or *ignore* |
 | `Enter` | View an artist's albums; drill into track listing |
 | `u` | Sync selected artist with MusicBrainz |
-| `U` | Bulk sync all *monitored* artists |
+| `U` | Bulk sync all *followed* artists |
 | `Esc` | Back |
 | `q` | Quit |
 
@@ -71,7 +71,7 @@ Overrides the database location if you don't want `.musup.db` cluttering your mu
 
 2. **Browse** — a [Bubble Tea](https://github.com/charmbracelet/bubbletea) TUI lists every artist with album counts, track ratios, and newest album title. Filter, sort, drill into album track listings. Local tracks are matched against the MusicBrainz catalog using fuzzy normalized titles — so *"Loser"* matches *"Loser (radio edit)"* without you losing sleep over it.
 
-3. **Sync** — queries [MusicBrainz](https://musicbrainz.org/) for an artist's full discography, stores albums and tracks locally, and shows you what you have versus what exists. Supports single-artist sync (`u`) or bulk sync of all monitored artists (`U`). Already-fetched albums are skipped on subsequent syncs.
+3. **Sync** — queries [MusicBrainz](https://musicbrainz.org/) for an artist's full discography, stores albums and tracks locally, and shows you what you have versus what exists. Supports single-artist sync (`u`) or bulk sync of all followed artists (`U`). Already-fetched albums are skipped on subsequent syncs.
 
 ## Supported formats
 

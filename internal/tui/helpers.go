@@ -64,7 +64,7 @@ func summariesToItems(summaries []state.ArtistSummary) []artistItem {
 			totalAlbums: s.TotalAlbums,
 			totalTracks: s.TotalTracks,
 			synced:      s.Synced,
-			monitor:     s.Monitor,
+			followed:    s.Followed,
 			hasNew:      s.HasNew,
 		}
 	}

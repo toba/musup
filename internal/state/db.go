@@ -240,6 +240,17 @@ func (d *DB) migrate() error {
 		version = 8
 	}
 
+	// Version 8 → 9: replace monitor (text) with followed (boolean)
+	if version < 9 {
+		if err := d.addColumnIfMissing("artists", "followed", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec("UPDATE artists SET followed = CASE WHEN monitor = 'monitor' THEN 1 ELSE 0 END"); err != nil {
+			return err
+		}
+		version = 9
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -694,62 +705,87 @@ func (d *DB) AllFileMeta() (map[string]FileMeta, error) {
 // ArtistSummary holds aggregate info for one artist.
 type ArtistSummary struct {
 	Name        string
-	AlbumCount  int           // local albums (from files)
-	NewestAlbum string        // kept for sort mode
-	TrackCount  int           // local tracks — from tracks.local when synced, else file count
-	TotalAlbums int           // catalog albums (from albums table, 0 if not synced)
-	TotalTracks int           // catalog tracks (from tracks table, 0 if not synced)
-	Synced      bool          // artist has MBID in artists table
-	Monitor     MonitorStatus // monitor/sometimes/ignore
-	HasNew      bool          // catalog has albums newer than latest local album
+	AlbumCount  int    // local albums (from files)
+	NewestAlbum string // kept for sort mode
+	TrackCount  int    // local tracks — from tracks.local when synced, else file count
+	TotalAlbums int    // catalog albums (from albums table, 0 if not synced)
+	TotalTracks int    // catalog tracks (from tracks table, 0 if not synced)
+	Synced      bool   // artist has MBID in artists table
+	Followed    bool   // artist is followed for sync
+	HasNew      bool   // catalog has albums newer than latest local album
 }
 
 // ArtistSummaries returns all artists with album counts and newest album name.
 func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	const q = `
-	SELECT (SELECT artist FROM files WHERE artist_norm = f.artist_norm
-	        GROUP BY artist ORDER BY COUNT(*) DESC LIMIT 1) AS display_name,
-	       COUNT(DISTINCT f.album) AS album_cnt,
-	       COALESCE(MAX(CASE WHEN f.album != '' THEN f.album END), '') AS newest,
-	       COUNT(*) AS track_cnt,
-	       COALESCE(a.mbid, '') AS mbid,
-	       COALESCE(al.total_albums, 0) AS total_albums,
-	       COALESCE(tr.total_tracks, 0) AS total_tracks,
-	       COALESCE(a.monitor, 'monitor') AS monitor,
-	       COALESCE((
-	           SELECT 1 FROM albums a2
-	           JOIN artists ar2 ON ar2.id = a2.artist_id
-	           WHERE ar2.name_norm = f.artist_norm
-	             AND a2.release_date > COALESCE((
-	                 SELECT MAX(a3.release_date)
-	                 FROM albums a3
-	                 JOIN artists ar3 ON ar3.id = a3.artist_id
-	                 JOIN tracks t3 ON t3.album_id = a3.id
-	                 WHERE ar3.name_norm = f.artist_norm AND t3.local = 1
-	             ), '')
-	           LIMIT 1
-	       ), 0) AS has_new,
-	       COALESCE(lt.local_tracks, 0) AS local_tracks
-	FROM files f
-	LEFT JOIN artists a ON a.name_norm = f.artist_norm
-	LEFT JOIN (
+	WITH
+	  file_stats AS (
+	    SELECT artist_norm,
+	           COUNT(DISTINCT album) AS album_cnt,
+	           COALESCE(MAX(CASE WHEN album != '' THEN album END), '') AS newest,
+	           COUNT(*) AS track_cnt
+	    FROM files
+	    WHERE artist != ''
+	    GROUP BY artist_norm
+	  ),
+	  display_names AS (
+	    SELECT artist_norm, artist AS name
+	    FROM (
+	      SELECT artist_norm, artist,
+	             ROW_NUMBER() OVER (PARTITION BY artist_norm ORDER BY COUNT(*) DESC) AS rn
+	      FROM files
+	      WHERE artist != ''
+	      GROUP BY artist_norm, artist
+	    )
+	    WHERE rn = 1
+	  ),
+	  album_counts AS (
 	    SELECT ar.name_norm, COUNT(*) AS total_albums
 	    FROM albums al JOIN artists ar ON ar.id = al.artist_id
 	    GROUP BY ar.name_norm
-	) al ON al.name_norm = f.artist_norm
-	LEFT JOIN (
-	    SELECT ar.name_norm, COUNT(*) AS total_tracks
-	    FROM tracks t JOIN albums abl ON abl.id = t.album_id JOIN artists ar ON ar.id = abl.artist_id
+	  ),
+	  track_counts AS (
+	    SELECT ar.name_norm,
+	           COUNT(*) AS total_tracks,
+	           SUM(t.local) AS local_tracks
+	    FROM tracks t
+	    JOIN albums al ON al.id = t.album_id
+	    JOIN artists ar ON ar.id = al.artist_id
 	    GROUP BY ar.name_norm
-	) tr ON tr.name_norm = f.artist_norm
-	LEFT JOIN (
-	    SELECT ar.name_norm, SUM(t.local) AS local_tracks
-	    FROM tracks t JOIN albums abl ON abl.id = t.album_id JOIN artists ar ON ar.id = abl.artist_id
+	  ),
+	  max_local_date AS (
+	    SELECT ar.name_norm, MAX(al.release_date) AS max_date
+	    FROM albums al
+	    JOIN artists ar ON ar.id = al.artist_id
+	    JOIN tracks t ON t.album_id = al.id
+	    WHERE t.local = 1
 	    GROUP BY ar.name_norm
-	) lt ON lt.name_norm = f.artist_norm
-	WHERE f.artist != ''
-	GROUP BY f.artist_norm
-	ORDER BY f.artist_norm
+	  ),
+	  has_new AS (
+	    SELECT ar.name_norm
+	    FROM albums al
+	    JOIN artists ar ON ar.id = al.artist_id
+	    LEFT JOIN max_local_date mld ON mld.name_norm = ar.name_norm
+	    WHERE al.release_date > COALESCE(mld.max_date, '')
+	    GROUP BY ar.name_norm
+	  )
+	SELECT dn.name,
+	       fs.album_cnt,
+	       fs.newest,
+	       fs.track_cnt,
+	       COALESCE(a.mbid, '') AS mbid,
+	       COALESCE(ac.total_albums, 0) AS total_albums,
+	       COALESCE(tc.total_tracks, 0) AS total_tracks,
+	       COALESCE(a.followed, 1) AS followed,
+	       CASE WHEN hn.name_norm IS NOT NULL THEN 1 ELSE 0 END AS has_new,
+	       COALESCE(tc.local_tracks, 0) AS local_tracks
+	FROM file_stats fs
+	JOIN display_names dn ON dn.artist_norm = fs.artist_norm
+	LEFT JOIN artists a ON a.name_norm = fs.artist_norm
+	LEFT JOIN album_counts ac ON ac.name_norm = fs.artist_norm
+	LEFT JOIN track_counts tc ON tc.name_norm = fs.artist_norm
+	LEFT JOIN has_new hn ON hn.name_norm = fs.artist_norm
+	ORDER BY fs.artist_norm
 	`
 	rows, err := d.db.Query(q)
 	if err != nil {
@@ -760,14 +796,14 @@ func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
 	var summaries []ArtistSummary
 	for rows.Next() {
 		var s ArtistSummary
-		var mbid, monitor string
-		var hasNew, localTracks int
+		var mbid string
+		var followed, hasNew, localTracks int
 		if err := rows.Scan(&s.Name, &s.AlbumCount, &s.NewestAlbum,
-			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &monitor, &hasNew, &localTracks); err != nil {
+			&s.TrackCount, &mbid, &s.TotalAlbums, &s.TotalTracks, &followed, &hasNew, &localTracks); err != nil {
 			return nil, err
 		}
 		s.Synced = mbid != ""
-		s.Monitor = MonitorStatus(monitor)
+		s.Followed = followed != 0
 		s.HasNew = hasNew != 0
 		// For synced artists, use the tracks.local count so it matches
 		// the per-album local counts shown in the album detail view.
@@ -1047,45 +1083,30 @@ func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
 	return tracks, rows.Err()
 }
 
-// MonitorStatus represents how frequently to check an artist for new releases.
-type MonitorStatus string
-
-const (
-	MonitorAlways    MonitorStatus = "monitor"
-	MonitorSometimes MonitorStatus = "sometimes"
-	MonitorIgnore    MonitorStatus = "ignore"
-)
-
-// MonitorStatuses is the ordered list of valid monitor statuses.
-var MonitorStatuses = []MonitorStatus{MonitorAlways, MonitorSometimes, MonitorIgnore}
-
-// MonitorLabels maps each status to its display label.
-var MonitorLabels = map[MonitorStatus]string{
-	MonitorAlways:    "Monitor — always check",
-	MonitorSometimes: "Sometimes — check occasionally",
-	MonitorIgnore:    "Ignore — never check",
-}
-
-// GetMonitorStatus returns the monitor status for an artist, defaulting to MonitorAlways.
-func (d *DB) GetMonitorStatus(artist string) (MonitorStatus, error) {
-	var status string
-	err := d.db.QueryRow("SELECT monitor FROM artists WHERE name_norm = ?", Normalize(artist)).Scan(&status)
+// IsFollowed returns whether an artist is followed, defaulting to true if no row exists.
+func (d *DB) IsFollowed(artist string) (bool, error) {
+	var followed int
+	err := d.db.QueryRow("SELECT followed FROM artists WHERE name_norm = ?", Normalize(artist)).Scan(&followed)
 	if errors.Is(err, sql.ErrNoRows) {
-		return MonitorAlways, nil
+		return true, nil
 	}
 	if err != nil {
-		return MonitorAlways, err
+		return true, err
 	}
-	return MonitorStatus(status), nil
+	return followed != 0, nil
 }
 
-// SetMonitorStatus sets the monitor status for an artist, upserting the artists row.
-func (d *DB) SetMonitorStatus(artist string, status MonitorStatus) error {
+// SetFollowed sets the followed status for an artist.
+func (d *DB) SetFollowed(artist string, followed bool) error {
 	id, err := d.EnsureArtist(artist)
 	if err != nil {
 		return err
 	}
-	_, err = d.db.Exec("UPDATE artists SET monitor = ? WHERE id = ?", string(status), id)
+	v := 0
+	if followed {
+		v = 1
+	}
+	_, err = d.db.Exec("UPDATE artists SET followed = ? WHERE id = ?", v, id)
 	return err
 }
 

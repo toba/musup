@@ -9,6 +9,17 @@ CLI that scans a folder of music files and reports which artists have released n
 - Run `scripts/lint.sh` after editing Go files
 - NEVER commit unless the user explicitly asks you to
 
+## Testing with real data
+
+The real music library and database live at:
+- Music root: `/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music`
+- DB: `/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music/.musup.db`
+
+**Always copy the DB before mutating it** when running benchmarks or experiments:
+```bash
+cp "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music/.musup.db" /tmp/musup-test.db
+```
+
 ## Build & Test
 
 ```bash

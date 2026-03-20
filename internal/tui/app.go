@@ -18,7 +18,6 @@ const (
 	viewDetail
 	viewAlbumDetail
 	viewSortPicker
-	viewStatusPicker
 	viewSyncing
 	viewBulkSyncing
 )
@@ -32,12 +31,12 @@ type Model struct {
 	height int
 
 	scanStatus string
+	scanning   bool // background scan in progress
 
 	list        listModel
 	detail      detailModel
 	albumDetail albumDetailModel
 	sort        sortModel
-	status      statusModel
 	sync        syncModel
 	bulkSync    bulkSyncModel
 	prevState   viewState // view behind the sync modal
@@ -50,12 +49,26 @@ func New(db *state.DB, root, version string) Model {
 		mb:         mb,
 		root:       root,
 		state:      viewScanning,
-		scanStatus: "Scanning music files...",
+		scanStatus: "Loading artists...",
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.startScan()
+	return m.loadCached()
+}
+
+type cachedMsg struct {
+	summaries []state.ArtistSummary
+}
+
+func (m Model) loadCached() tea.Cmd {
+	return func() tea.Msg {
+		summaries, err := m.db.ArtistSummaries()
+		if err != nil || len(summaries) == 0 {
+			return cachedMsg{}
+		}
+		return cachedMsg{summaries: summaries}
+	}
 }
 
 func (m Model) startScan() tea.Cmd {
@@ -79,17 +92,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+	case cachedMsg:
+		if len(msg.summaries) > 0 {
+			m.list = newListModel(m.db, msg.summaries, m.width, m.height)
+			m.state = viewList
+			m.scanning = true
+		} else {
+			m.scanStatus = "Scanning music files..."
+		}
+		return m, m.startScan()
 	case scanDoneMsg:
+		m.scanning = false
 		if msg.err != nil {
-			m.scanStatus = fmt.Sprintf("Error: %v", msg.err)
+			if m.state == viewScanning {
+				m.scanStatus = fmt.Sprintf("Error: %v", msg.err)
+			}
 			return m, nil
 		}
 		if len(msg.summaries) == 0 {
-			m.scanStatus = "No supported music files found in this directory."
+			if m.state == viewScanning {
+				m.scanStatus = "No supported music files found in this directory."
+			}
 			return m, nil
 		}
-		m.list = newListModel(m.db, msg.summaries, m.width, m.height)
-		m.state = viewList
+		if m.state == viewScanning {
+			// First launch with no cached data.
+			m.list = newListModel(m.db, msg.summaries, m.width, m.height)
+			m.state = viewList
+		} else {
+			// Background scan finished — refresh list in place.
+			m.list.refreshFrom(msg.summaries)
+		}
+		return m, nil
+	case refreshMsg:
+		if len(msg.summaries) > 0 {
+			m.list.refreshFrom(msg.summaries)
+		}
 		return m, nil
 	case startSyncMsg:
 		m.prevState = m.state
@@ -125,10 +163,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case showSortMsg:
 			m.sort = newSortModel(m.list.sortMode)
 			m.state = viewSortPicker
-			return m, nil
-		case showStatusMsg:
-			m.status = newStatusModel(m.db, msg.artist, msg.current)
-			m.state = viewStatusPicker
 			return m, nil
 		}
 		return m, cmd
@@ -172,20 +206,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case viewStatusPicker:
-		var cmd tea.Cmd
-		m.status, cmd = m.status.Update(msg)
-		switch msg.(type) {
-		case statusChosenMsg:
-			m.list.refreshItems()
-			m.state = viewList
-			return m, nil
-		case statusCancelMsg:
-			m.state = viewList
-			return m, nil
-		}
-		return m, cmd
-
 	case viewSyncing:
 		// Allow quit during sync
 		if msg, ok := msg.(tea.KeyMsg); ok {
@@ -206,12 +226,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.state = viewDetail
 				return m, nil
 			}
-			// On success, refresh list and show detail view with results
-			m.list.refreshItems()
+			// On success, refresh list async and show detail view with results
 			m.detail = newDetailModel(m.db, m.mb, m.sync.artist)
 			m.detail.height = m.height
 			m.state = viewDetail
-			return m, nil
+			return m, m.list.refreshCmd()
 		}
 
 		return m, cmd
@@ -232,9 +251,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.bulkSync, cmd = m.bulkSync.Update(msg)
 
 		if m.bulkSync.done {
-			m.list.refreshItems()
 			m.state = viewList
-			return m, nil
+			return m, m.list.refreshCmd()
 		}
 
 		return m, cmd
@@ -258,8 +276,6 @@ func (m Model) View() string {
 		return m.albumDetail.View()
 	case viewSortPicker:
 		return m.sort.View(m.width, m.height, m.list.View())
-	case viewStatusPicker:
-		return m.status.View(m.width, m.height, m.list.View())
 	case viewSyncing:
 		bg := m.bgView()
 		return m.sync.View(m.width, m.height, bg)

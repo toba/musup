@@ -10,12 +10,18 @@
 
 ### 🐛 Fixes
 
+- Startup hangs; `ArtistSummaries` query takes ~51s on large databases
+- Duplicate albums in check output
 - Artist view shows track count but album view shows zero tracks
 - Album detail shows 0 tracks despite artist summary showing track count
 - Status modal enter key doesn't dismiss modal
 
 ### 🗜️ Tweaks
 
+- Simplify monitor status to boolean `followed`
+- Show cached artist list instantly on startup; scan in background
+- `scripts/install.sh`; build and install to brew location
+- Consolidate per-project Homebrew taps into single `toba/homebrew-tap`
 - Refactor schema to use integer PKs instead of name-based composite keys
 - Speed up startup; in-memory file change detection
 

@@ -62,6 +62,12 @@ func (m detailModel) Update(msg tea.Msg) (detailModel, tea.Cmd) {
 					return showAlbumDetailMsg{artist: m.artist, albumTitle: a.Title, year: year}
 				}
 			}
+		case "f":
+			followed, err := m.db.IsFollowed(m.artist)
+			if err == nil {
+				_ = m.db.SetFollowed(m.artist, !followed)
+			}
+			return m, nil
 		case "u":
 			if m.mb != nil {
 				return m, func() tea.Msg { return startSyncMsg{artist: m.artist} }
@@ -122,7 +128,7 @@ func (m detailModel) View() string {
 		b.WriteString(mutedStyle.Render("No albums found."))
 	}
 
-	b.WriteString("\n" + subtleStyle.Render("esc: back · enter: tracks · u: update catalog · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render("esc: back · enter: tracks · f: follow · u: update catalog · q: quit"))
 
 	return b.String()
 }

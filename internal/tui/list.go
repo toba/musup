@@ -21,7 +21,7 @@ type artistItem struct {
 	totalAlbums int    // catalog (0 = not synced)
 	totalTracks int    // catalog (0 = not synced)
 	synced      bool
-	monitor     state.MonitorStatus
+	followed    bool
 	hasNew      bool
 }
 
@@ -48,14 +48,11 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		nameStyle = nameStyle.Foreground(colorAccent).Bold(true)
 	}
 
-	// Status indicator: 2 chars — color encodes monitor level
+	// Status indicator: 2 chars — green if followed, dim otherwise
 	var statusInd string
-	switch ai.monitor {
-	case state.MonitorAlways:
+	if ai.followed {
 		statusInd = localStyle.Render("• ")
-	case state.MonitorSometimes:
-		statusInd = lipgloss.NewStyle().Foreground(colorWarning).Render("• ")
-	case state.MonitorIgnore:
+	} else {
 		statusInd = subtleStyle.Render("• ")
 	}
 
@@ -130,7 +127,7 @@ func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height i
 	l := list.New(listItems, artistDelegate{}, width, height-2)
 	l.Title = fmt.Sprintf("musup — %d artists", len(items))
 	l.SetShowHelp(false)
-	l.SetShowStatusBar(true)
+	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
 	l.Styles.Title = titleStyle
 	l.Styles.FilterPrompt = lipgloss.NewStyle().Foreground(colorAccent)
@@ -164,18 +161,28 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 		case "U":
 			var artists []string
 			for _, item := range m.allItems {
-				if item.monitor == state.MonitorAlways {
+				if item.followed {
 					artists = append(artists, item.name)
 				}
 			}
 			if len(artists) > 0 {
 				return m, func() tea.Msg { return startBulkSyncMsg{artists: artists} }
 			}
-			m.list.NewStatusMessage(subtleStyle.Render("No artists set to Monitor — use s to change status"))
+			m.list.NewStatusMessage(subtleStyle.Render("No followed artists — use f to toggle"))
 			return m, nil
-		case "s":
+		case "f":
 			if item, ok := m.list.SelectedItem().(artistItem); ok {
-				return m, func() tea.Msg { return showStatusMsg{artist: item.name, current: item.monitor} }
+				newFollowed := !item.followed
+				if err := m.db.SetFollowed(item.name, newFollowed); err != nil {
+					m.list.NewStatusMessage(errorStyle.Render(err.Error()))
+					return m, nil
+				}
+				label := "followed"
+				if !newFollowed {
+					label = "unfollowed"
+				}
+				m.list.NewStatusMessage(subtleStyle.Render(fmt.Sprintf("%s %s", item.name, label)))
+				return m, m.refreshCmd()
 			}
 		case "n":
 			m.showNew = !m.showNew
@@ -201,11 +208,23 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 	return m, cmd
 }
 
-func (m *listModel) refreshItems() {
-	summaries, err := m.db.ArtistSummaries()
-	if err != nil {
-		return
+type refreshMsg struct {
+	summaries []state.ArtistSummary
+}
+
+// refreshCmd returns a tea.Cmd that fetches summaries asynchronously.
+func (m *listModel) refreshCmd() tea.Cmd {
+	return func() tea.Msg {
+		summaries, err := m.db.ArtistSummaries()
+		if err != nil {
+			return refreshMsg{}
+		}
+		return refreshMsg{summaries: summaries}
 	}
+}
+
+// refreshFrom updates the list with the given summaries (no DB call).
+func (m *listModel) refreshFrom(summaries []state.ArtistSummary) {
 	m.allItems = summariesToItems(summaries)
 	m.applySort()
 }
@@ -243,13 +262,9 @@ func (m *listModel) updateTitle(count int) {
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · s: status · o: sort · u: sync · U: sync monitored · enter: detail · q: quit"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · f: follow · o: sort · u: sync · U: sync followed · enter: detail · q: quit"))
 	return b.String()
 }
 
 type showDetailMsg struct{ artist string }
 type showSortMsg struct{}
-type showStatusMsg struct {
-	artist  string
-	current state.MonitorStatus
-}

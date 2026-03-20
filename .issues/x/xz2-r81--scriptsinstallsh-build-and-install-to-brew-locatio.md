@@ -6,6 +6,10 @@ type: task
 priority: normal
 created_at: 2026-03-20T19:12:25Z
 updated_at: 2026-03-20T19:14:07Z
+sync:
+    github:
+        issue_number: "36"
+        synced_at: "2026-03-20T19:57:53Z"
 ---
 
 Create a minimal install script that builds musup and replaces the brew-installed binary for local iteration.

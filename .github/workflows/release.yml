@@ -47,7 +47,7 @@ jobs:
             exit 1
           fi
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/homebrew-musup.git" tap
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/homebrew-tap.git" tap
           cd tap
 
           cat > Formula/musup.rb << FORMULA

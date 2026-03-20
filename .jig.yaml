@@ -7,7 +7,7 @@ todo:
             repo: toba/musup
 changelog: weekly
 companions:
-    brew: https://github.com/toba/homebrew-musup.git
+    brew: https://github.com/toba/homebrew-tap.git
     scoop: https://github.com/toba/scoop-musup.git
 citations:
     - repo: dhowden/tag
@@ -22,4 +22,25 @@ citations:
       notes: a Go (Golang) MusicBrainz WS2 client library - work in progress
       paths:
         high: ['**/*.go']
+        low: [.github/**, README.md, LICENSE]
+    - repo: charmbracelet/lipgloss
+      branch: main
+      notes: "Style definitions for nice terminal layouts \U0001F444"
+      paths:
+        high: ['**/*.go']
+        medium: [go.mod, go.sum]
+        low: [.github/**, README.md, LICENSE]
+    - repo: charmbracelet/bubbletea
+      branch: main
+      notes: "A powerful little TUI framework \U0001F3D7"
+      paths:
+        high: ['**/*.go']
+        medium: [go.mod, go.sum]
+        low: [.github/**, README.md, LICENSE]
+    - repo: charmbracelet/bubbles
+      branch: main
+      notes: "TUI components for Bubble Tea \U0001FAE7"
+      paths:
+        high: ['**/*.go']
+        medium: [go.mod, go.sum]
         low: [.github/**, README.md, LICENSE]

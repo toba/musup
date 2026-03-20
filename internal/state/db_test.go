@@ -865,8 +865,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("expected user_version 8, got %d", version)
+	if version != 9 {
+		t.Fatalf("expected user_version 9, got %d", version)
 	}
 }
 
@@ -893,8 +893,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("expected user_version 8, got %d", version)
+	if version != 9 {
+		t.Fatalf("expected user_version 9, got %d", version)
 	}
 }
 
@@ -1104,46 +1104,40 @@ func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 	}
 }
 
-func TestGetSetMonitorStatus(t *testing.T) {
+func TestGetSetFollowed(t *testing.T) {
 	db := openTestDB(t)
 
-	// Unknown artist defaults to MonitorAlways.
-	status, err := db.GetMonitorStatus("Unknown Artist")
+	// Unknown artist defaults to followed.
+	followed, err := db.IsFollowed("Unknown Artist")
 	if err != nil {
-		t.Fatalf("GetMonitorStatus unknown: %v", err)
+		t.Fatalf("IsFollowed unknown: %v", err)
 	}
-	if status != MonitorAlways {
-		t.Fatalf("expected MonitorAlways for unknown artist, got %q", status)
+	if !followed {
+		t.Fatal("expected unknown artist to be followed by default")
 	}
 
-	// Round-trip each of the 3 statuses.
-	cases := []MonitorStatus{MonitorAlways, MonitorSometimes, MonitorIgnore}
-	for _, want := range cases {
-		if err := db.SetMonitorStatus("Test Artist", want); err != nil {
-			t.Fatalf("SetMonitorStatus %q: %v", want, err)
-		}
-		got, err := db.GetMonitorStatus("Test Artist")
-		if err != nil {
-			t.Fatalf("GetMonitorStatus after Set %q: %v", want, err)
-		}
-		if got != want {
-			t.Fatalf("expected %q, got %q", want, got)
-		}
+	// Toggle off.
+	if err := db.SetFollowed("Test Artist", false); err != nil {
+		t.Fatalf("SetFollowed false: %v", err)
+	}
+	followed, err = db.IsFollowed("Test Artist")
+	if err != nil {
+		t.Fatalf("IsFollowed after set false: %v", err)
+	}
+	if followed {
+		t.Fatal("expected not followed after SetFollowed(false)")
 	}
 
-	// Calling SetMonitorStatus twice on the same artist updates (not duplicates).
-	if err := db.SetMonitorStatus("Test Artist", MonitorIgnore); err != nil {
-		t.Fatalf("SetMonitorStatus second call: %v", err)
+	// Toggle on.
+	if err := db.SetFollowed("Test Artist", true); err != nil {
+		t.Fatalf("SetFollowed true: %v", err)
 	}
-	if err := db.SetMonitorStatus("Test Artist", MonitorSometimes); err != nil {
-		t.Fatalf("SetMonitorStatus third call: %v", err)
-	}
-	got, err := db.GetMonitorStatus("Test Artist")
+	followed, err = db.IsFollowed("Test Artist")
 	if err != nil {
-		t.Fatalf("GetMonitorStatus after double set: %v", err)
+		t.Fatalf("IsFollowed after set true: %v", err)
 	}
-	if got != MonitorSometimes {
-		t.Fatalf("expected MonitorSometimes after update, got %q", got)
+	if !followed {
+		t.Fatal("expected followed after SetFollowed(true)")
 	}
 
 	// Verify no duplicate rows exist.
@@ -1339,7 +1333,7 @@ func TestArtistSummaries_HasNew(t *testing.T) {
 	}
 }
 
-func TestArtistSummaries_MonitorField(t *testing.T) {
+func TestArtistSummaries_FollowedField(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
@@ -1351,7 +1345,7 @@ func TestArtistSummaries_MonitorField(t *testing.T) {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Default (no artists row) should be MonitorAlways.
+	// Default (no artists row) should be followed.
 	summaries, err := db.ArtistSummaries()
 	if err != nil {
 		t.Fatalf("ArtistSummaries (default): %v", err)
@@ -1359,32 +1353,32 @@ func TestArtistSummaries_MonitorField(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 summary, got %d", len(summaries))
 	}
-	if summaries[0].Monitor != MonitorAlways {
-		t.Fatalf("expected MonitorAlways by default, got %q", summaries[0].Monitor)
+	if !summaries[0].Followed {
+		t.Fatal("expected Followed=true by default")
 	}
 
-	// Set to Ignore and verify.
-	if err := db.SetMonitorStatus("Radiohead", MonitorIgnore); err != nil {
-		t.Fatalf("SetMonitorStatus: %v", err)
+	// Unfollow and verify.
+	if err := db.SetFollowed("Radiohead", false); err != nil {
+		t.Fatalf("SetFollowed: %v", err)
 	}
 	summaries, err = db.ArtistSummaries()
 	if err != nil {
-		t.Fatalf("ArtistSummaries (after set): %v", err)
+		t.Fatalf("ArtistSummaries (after unfollow): %v", err)
 	}
-	if summaries[0].Monitor != MonitorIgnore {
-		t.Fatalf("expected MonitorIgnore, got %q", summaries[0].Monitor)
+	if summaries[0].Followed {
+		t.Fatal("expected Followed=false after unfollow")
 	}
 
-	// Set to Sometimes and verify.
-	if err := db.SetMonitorStatus("Radiohead", MonitorSometimes); err != nil {
-		t.Fatalf("SetMonitorStatus: %v", err)
+	// Re-follow and verify.
+	if err := db.SetFollowed("Radiohead", true); err != nil {
+		t.Fatalf("SetFollowed: %v", err)
 	}
 	summaries, err = db.ArtistSummaries()
 	if err != nil {
-		t.Fatalf("ArtistSummaries (after sometimes): %v", err)
+		t.Fatalf("ArtistSummaries (after re-follow): %v", err)
 	}
-	if summaries[0].Monitor != MonitorSometimes {
-		t.Fatalf("expected MonitorSometimes, got %q", summaries[0].Monitor)
+	if !summaries[0].Followed {
+		t.Fatal("expected Followed=true after re-follow")
 	}
 }
 
@@ -1671,8 +1665,8 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 8 {
-		t.Fatalf("expected version 8, got %d", version)
+	if version != 9 {
+		t.Fatalf("expected version 9, got %d", version)
 	}
 
 	// Verify deduplicated artists (both variants → 1 row)
