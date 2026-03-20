@@ -8,7 +8,7 @@ todo:
 changelog: weekly
 companions:
     brew: https://github.com/toba/homebrew-tap.git
-    scoop: https://github.com/toba/scoop-musup.git
+    scoop: toba/scoop-bucket
 citations:
     - repo: dhowden/tag
       branch: master

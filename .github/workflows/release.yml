@@ -105,7 +105,7 @@ jobs:
             exit 1
           fi
 
-          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/scoop-musup.git" bucket
+          git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/scoop-bucket.git" bucket
           cd bucket
 
           jq -n \
@@ -141,10 +141,10 @@ jobs:
                   }
                 }
               }
-            }' > bucket/musup.json
+            }' > musup.json
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add bucket/musup.json
-          git commit -m "bump to ${VERSION}"
+          git add musup.json
+          git commit -m "bump musup to ${VERSION}"
           git push
