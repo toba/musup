@@ -21,8 +21,6 @@ type Artist struct {
 	NameNorm      string
 	Mbid          string
 	LastCheckedAt string
-	LatestRelease string
-	LatestDate    string
 	NotFound      int64
 	Followed      int64
 	ReviewedAt    string

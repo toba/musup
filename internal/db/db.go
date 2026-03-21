@@ -99,8 +99,6 @@ func (d *DB) migrate() error {
 			name             TEXT PRIMARY KEY,
 			mbid             TEXT NOT NULL DEFAULT '',
 			last_checked_at  TEXT NOT NULL DEFAULT '',
-			latest_release   TEXT NOT NULL DEFAULT '',
-			latest_date      TEXT NOT NULL DEFAULT '',
 			not_found        INTEGER NOT NULL DEFAULT 0
 		);
 		`
@@ -228,6 +226,17 @@ func (d *DB) migrate() error {
 		version = 11
 	}
 
+	// Version 11 → 12: drop unused latest_release and latest_date columns from artists
+	if version < 12 {
+		if err := d.dropColumnIfExists("artists", "latest_release"); err != nil {
+			return err
+		}
+		if err := d.dropColumnIfExists("artists", "latest_date"); err != nil {
+			return err
+		}
+		version = 12
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -247,13 +256,11 @@ func (d *DB) migrateToIntegerPKs() error {
 			name_norm       TEXT NOT NULL UNIQUE,
 			mbid            TEXT NOT NULL DEFAULT '',
 			last_checked_at TEXT NOT NULL DEFAULT '',
-			latest_release  TEXT NOT NULL DEFAULT '',
-			latest_date     TEXT NOT NULL DEFAULT '',
 			not_found       INTEGER NOT NULL DEFAULT 0,
 			monitor         TEXT NOT NULL DEFAULT 'monitor'
 		);
-		INSERT INTO artists_new (name, name_norm, mbid, last_checked_at, latest_release, latest_date, not_found, monitor)
-		SELECT MAX(name), name_norm, MAX(mbid), MAX(last_checked_at), MAX(latest_release), MAX(latest_date), MAX(not_found), MAX(monitor)
+		INSERT INTO artists_new (name, name_norm, mbid, last_checked_at, not_found, monitor)
+		SELECT MAX(name), name_norm, MAX(mbid), MAX(last_checked_at), MAX(not_found), MAX(monitor)
 		FROM artists
 		WHERE name_norm != ''
 		GROUP BY name_norm;
@@ -399,6 +406,23 @@ func (d *DB) migrateToIntegerPKs() error {
 	}
 
 	return tx.Commit()
+}
+
+func (d *DB) dropColumnIfExists(table, column string) error {
+	var count int
+	err := d.db.QueryRow(
+		fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column),
+	).Scan(&count)
+	if err != nil {
+		return err
+	}
+	if count > 0 {
+		_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (d *DB) addColumnIfMissing(table, column, colDef string) error {

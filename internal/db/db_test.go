@@ -64,11 +64,7 @@ func testUpsertArtist(t *testing.T, db *DB, name, mbid string, lastCheckedAt tim
 	if err != nil {
 		t.Fatalf("EnsureArtist(%q): %v", name, err)
 	}
-	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          mbid,
-		LastCheckedAt: lastCheckedAt.Format(time.RFC3339),
-		ID:            id,
-	})
+	err = db.Q.UpdateArtistFull(bg, mbid, lastCheckedAt.Format(time.RFC3339), 0, id)
 	if err != nil {
 		t.Fatalf("UpdateArtistFull(%q): %v", name, err)
 	}
@@ -231,13 +227,7 @@ func TestUpsertArtistAndLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
 	}
-	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
-		LastCheckedAt: now.Format(time.RFC3339),
-		LatestRelease: "A Moon Shaped Pool",
-		LatestDate:    "2016-05-08",
-		ID:            id,
-	})
+	err = db.Q.UpdateArtistFull(bg, "a74b1b7f-71a5-4011-9441-d0b5e4122711", now.Format(time.RFC3339), 0, id)
 	if err != nil {
 		t.Fatalf("UpdateArtistFull: %v", err)
 	}
@@ -403,14 +393,7 @@ func TestMarkArtistNotFound_ClearedByUpsert(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
 	}
-	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
-		LastCheckedAt: now.Format(time.RFC3339),
-		LatestRelease: "A Moon Shaped Pool",
-		LatestDate:    "2016-05-08",
-		NotFound:      0,
-		ID:            id,
-	})
+	err = db.Q.UpdateArtistFull(bg, "a74b1b7f-71a5-4011-9441-d0b5e4122711", now.Format(time.RFC3339), 0, id)
 	if err != nil {
 		t.Fatalf("UpdateArtistFull: %v", err)
 	}
@@ -841,8 +824,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("expected user_version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected user_version 12, got %d", version)
 	}
 }
 
@@ -867,8 +850,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("expected user_version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected user_version 12, got %d", version)
 	}
 }
 
@@ -1197,25 +1180,13 @@ func TestUpsertArtist_UpdateFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
 	}
-	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          "mbid-v1",
-		LastCheckedAt: now.Format(time.RFC3339),
-		LatestRelease: "Pablo Honey",
-		LatestDate:    "1993-02-22",
-		ID:            id,
-	})
+	err = db.Q.UpdateArtistFull(bg, "mbid-v1", now.Format(time.RFC3339), 0, id)
 	if err != nil {
 		t.Fatalf("UpdateArtistFull first: %v", err)
 	}
 
 	later := now.Add(time.Hour)
-	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          "mbid-v2",
-		LastCheckedAt: later.Format(time.RFC3339),
-		LatestRelease: "A Moon Shaped Pool",
-		LatestDate:    "2016-05-08",
-		ID:            id,
-	})
+	err = db.Q.UpdateArtistFull(bg, "mbid-v2", later.Format(time.RFC3339), 0, id)
 	if err != nil {
 		t.Fatalf("UpdateArtistFull second: %v", err)
 	}
@@ -1226,12 +1197,6 @@ func TestUpsertArtist_UpdateFields(t *testing.T) {
 	}
 	if got.Mbid != "mbid-v2" {
 		t.Fatalf("expected MBID %q, got %q", "mbid-v2", got.Mbid)
-	}
-	if got.LatestRelease != "A Moon Shaped Pool" {
-		t.Fatalf("expected LatestRelease %q, got %q", "A Moon Shaped Pool", got.LatestRelease)
-	}
-	if got.LatestDate != "2016-05-08" {
-		t.Fatalf("expected LatestDate %q, got %q", "2016-05-08", got.LatestDate)
 	}
 }
 
@@ -1278,6 +1243,34 @@ func TestArtistSummaries_HasNew(t *testing.T) {
 	}
 	if byName["Bjork"].HasNew != 0 {
 		t.Error("expected Bjork HasNew = 0 (not synced)")
+	}
+}
+
+func TestArtistSummaries_LatestDateFromAlbums(t *testing.T) {
+	db := openTestDB(t)
+
+	// Create a file so the artist appears in summaries.
+	if err := db.Q.UpsertFile(bg, testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag")); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Create an artist with synced albums — latest_date should be derived from albums.
+	rhID := ensureArtist(t, db, "Radiohead")
+	okID := testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Airbag", Position: 1, Local: 1})
+
+	summaries, err := db.Q.ArtistSummaries(bg)
+	if err != nil {
+		t.Fatalf("ArtistSummaries: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 summary, got %d", len(summaries))
+	}
+
+	// The summary should still report 2016-05-08 derived from albums.release_date.
+	if summaries[0].LatestDate != "2016-05-08" {
+		t.Errorf("expected LatestDate %q, got %q", "2016-05-08", summaries[0].LatestDate)
 	}
 }
 
@@ -1578,8 +1571,8 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 11 {
-		t.Fatalf("expected version 11, got %d", version)
+	if version != 12 {
+		t.Fatalf("expected version 12, got %d", version)
 	}
 
 	var artistCount int

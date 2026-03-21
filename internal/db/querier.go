@@ -30,7 +30,7 @@ type Querier interface {
 	MarkReviewed(ctx context.Context, artistID int64) error
 	SetFollowed(ctx context.Context, followed int64, iD int64) error
 	UniqueArtists(ctx context.Context) ([]string, error)
-	UpdateArtistFull(ctx context.Context, arg UpdateArtistFullParams) error
+	UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error
 	UpdateArtistMeta(ctx context.Context, mbid string, lastCheckedAt string, iD int64) error
 	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) (int64, error)
 	UpsertFile(ctx context.Context, arg UpsertFileParams) error

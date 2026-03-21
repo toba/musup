@@ -7,6 +7,7 @@
 - Merge artists with names differing only by case or punctuation
 - Filter artist list to show only artists with newer albums than local
 - Highlight entire row when navigating artist list
+- Add number key shortcuts (1-9) to filter artist list by release recency ([#57](https://github.com/toba/musup/issues/57))
 - Add background task spinner in top-right corner
 - Update TUI footer help text; add help modal
 - Auto-sync when following an artist
@@ -26,6 +27,7 @@
 - Fix inconsistent local album count for synced artists
 - Filter `n` shortcut only shows followed artists with new releases
 - Fix column alignment in artist list
+- 0 artists shown when filtering by release recency; `artists.latest_date` was never populated ([#59](https://github.com/toba/musup/issues/59))
 - Hide guest/compilation artists who aren't album artists on any files ([#51](https://github.com/toba/musup/issues/51))
 
 ### 🗜️ Tweaks
@@ -38,6 +40,7 @@
 - Speed up startup; in-memory file change detection
 - Migrate TUI dependencies to v2 (`bubbletea`, `lipgloss`, `bubbles`)
 - Extract shared TUI helpers; simplify scan mutex pattern; add `boolToInt`; deduplicate `bgView`
+- Drop unused `artists.latest_date` and `artists.latest_release` columns; derive from `albums.release_date` ([#58](https://github.com/toba/musup/issues/58))
 - Implement `sqlc` for type-safe database queries; flatten `internal/state/model` into `internal/db` ([#56](https://github.com/toba/musup/issues/56))
 
 ## Week of Mar 8 – Mar 14, 2026

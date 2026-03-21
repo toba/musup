@@ -1,15 +1,15 @@
 ---
 # m90-a6s
 title: Mark artist as reviewed through a particular album
-status: review
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-20T20:33:53Z
-updated_at: 2026-03-20T20:44:35Z
+updated_at: 2026-03-21T18:22:04Z
 sync:
     github:
         issue_number: "52"
-        synced_at: "2026-03-20T21:31:31Z"
+        synced_at: "2026-03-21T18:36:22Z"
 ---
 
 ## Goal

@@ -1,15 +1,15 @@
 ---
 # 0in-mro
 title: Number key shortcuts (1-9) to filter artist list by recent release years
-status: review
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-21T18:06:56Z
-updated_at: 2026-03-21T18:11:39Z
+updated_at: 2026-03-21T18:21:51Z
 sync:
     github:
         issue_number: "57"
-        synced_at: "2026-03-21T18:15:14Z"
+        synced_at: "2026-03-21T18:36:22Z"
 ---
 
 ## Description

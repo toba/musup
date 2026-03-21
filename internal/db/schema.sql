@@ -21,8 +21,6 @@ CREATE TABLE artists (
     name_norm       TEXT NOT NULL UNIQUE,
     mbid            TEXT NOT NULL DEFAULT '',
     last_checked_at TEXT NOT NULL DEFAULT '',
-    latest_release  TEXT NOT NULL DEFAULT '',
-    latest_date     TEXT NOT NULL DEFAULT '',
     not_found       INTEGER NOT NULL DEFAULT 0,
     followed        INTEGER NOT NULL DEFAULT 1,
     reviewed_at     TEXT NOT NULL DEFAULT ''

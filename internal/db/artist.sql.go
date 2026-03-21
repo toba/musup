@@ -55,6 +55,12 @@ WITH
     WHERE t.local = 1
     GROUP BY ar.name_norm
   ),
+  latest_release_date AS (
+    SELECT ar.name_norm, MAX(al.release_date) AS max_date
+    FROM albums al
+    JOIN artists ar ON ar.id = al.artist_id
+    GROUP BY ar.name_norm
+  ),
   has_new AS (
     SELECT ar.name_norm
     FROM albums al
@@ -74,13 +80,14 @@ SELECT dn.name,
        CAST(CASE WHEN hn.name_norm IS NOT NULL THEN 1 ELSE 0 END AS INTEGER) AS has_new,
        CAST(COALESCE(tc.local_tracks, 0) AS INTEGER) AS local_tracks,
        CAST(COALESCE(tc.local_albums, 0) AS INTEGER) AS local_albums,
-       CAST(COALESCE(a.latest_date, '') AS TEXT) AS latest_date
+       CAST(COALESCE(lrd.max_date, '') AS TEXT) AS latest_date
 FROM file_stats fs
 JOIN display_names dn ON dn.artist_norm = fs.artist_norm
 LEFT JOIN artists a ON a.name_norm = fs.artist_norm
 LEFT JOIN album_counts ac ON ac.name_norm = fs.artist_norm
 LEFT JOIN track_counts tc ON tc.name_norm = fs.artist_norm
 LEFT JOIN has_new hn ON hn.name_norm = fs.artist_norm
+LEFT JOIN latest_release_date lrd ON lrd.name_norm = fs.artist_norm
 ORDER BY fs.artist_norm
 `
 
@@ -136,7 +143,7 @@ func (q *Queries) ArtistSummaries(ctx context.Context) ([]ArtistSummariesRow, er
 }
 
 const getArtistByNameNorm = `-- name: GetArtistByNameNorm :one
-SELECT id, name, mbid, last_checked_at, latest_release, latest_date, not_found
+SELECT id, name, mbid, last_checked_at, not_found
 FROM artists WHERE name_norm = ?
 `
 
@@ -145,8 +152,6 @@ type GetArtistByNameNormRow struct {
 	Name          string
 	Mbid          string
 	LastCheckedAt string
-	LatestRelease string
-	LatestDate    string
 	NotFound      int64
 }
 
@@ -158,8 +163,6 @@ func (q *Queries) GetArtistByNameNorm(ctx context.Context, nameNorm string) (Get
 		&i.Name,
 		&i.Mbid,
 		&i.LastCheckedAt,
-		&i.LatestRelease,
-		&i.LatestDate,
 		&i.NotFound,
 	)
 	return i, err
@@ -247,27 +250,16 @@ func (q *Queries) SetFollowed(ctx context.Context, followed int64, iD int64) err
 
 const updateArtistFull = `-- name: UpdateArtistFull :exec
 UPDATE artists SET
-    mbid = ?, last_checked_at = ?, latest_release = ?, latest_date = ?, not_found = ?
+    mbid = ?, last_checked_at = ?, not_found = ?
 WHERE id = ?
 `
 
-type UpdateArtistFullParams struct {
-	Mbid          string
-	LastCheckedAt string
-	LatestRelease string
-	LatestDate    string
-	NotFound      int64
-	ID            int64
-}
-
-func (q *Queries) UpdateArtistFull(ctx context.Context, arg UpdateArtistFullParams) error {
+func (q *Queries) UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error {
 	_, err := q.db.ExecContext(ctx, updateArtistFull,
-		arg.Mbid,
-		arg.LastCheckedAt,
-		arg.LatestRelease,
-		arg.LatestDate,
-		arg.NotFound,
-		arg.ID,
+		mbid,
+		lastCheckedAt,
+		notFound,
+		iD,
 	)
 	return err
 }
