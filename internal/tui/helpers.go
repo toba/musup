@@ -7,7 +7,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 )
 
 const (
@@ -129,19 +129,24 @@ func helpView(width, height int, bg string, fromView viewState) string {
 	return placeOverlay(width, height, modal, bg)
 }
 
-func summariesToItems(summaries []state.ArtistSummary) []artistItem {
+func summariesToItems(summaries []db.ArtistSummariesRow) []artistItem {
 	items := make([]artistItem, len(summaries))
 	for i, s := range summaries {
+		synced := s.Mbid != ""
+		trackCount := int(s.TrackCnt)
+		if synced && int(s.LocalTracks) > trackCount {
+			trackCount = int(s.LocalTracks)
+		}
 		items[i] = artistItem{
 			name:        s.Name,
-			albumCount:  s.AlbumCount,
-			newestAlbum: s.NewestAlbum,
-			trackCount:  s.TrackCount,
-			totalAlbums: s.TotalAlbums,
-			totalTracks: s.TotalTracks,
-			synced:      s.Synced,
-			followed:    s.Followed,
-			hasNew:      s.HasNew,
+			albumCount:  int(s.AlbumCnt),
+			newestAlbum: s.Newest,
+			trackCount:  trackCount,
+			totalAlbums: int(s.TotalAlbums),
+			totalTracks: int(s.TotalTracks),
+			synced:      synced,
+			followed:    s.Followed != 0,
+			hasNew:      s.HasNew != 0,
 		}
 	}
 	return items

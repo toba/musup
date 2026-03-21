@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -30,22 +31,61 @@ func ensureArtist(t *testing.T, db *DB, name string) int64 {
 	return id
 }
 
-// upsertAlbum is a test helper that calls UpsertAlbum and fails on error.
-func upsertAlbum(t *testing.T, db *DB, artistID int64, a AlbumRecord) int64 {
+// testUpsertAlbum is a test helper that calls UpsertAlbum and fails on error.
+func testUpsertAlbum(t *testing.T, db *DB, artistID int64, p UpsertAlbumParams) int64 {
 	t.Helper()
-	id, err := db.UpsertAlbum(artistID, a)
+	p.ArtistID = artistID
+	if p.TitleNorm == "" {
+		p.TitleNorm = Normalize(p.Title)
+	}
+	id, err := db.UpsertAlbum(artistID, p)
 	if err != nil {
-		t.Fatalf("UpsertAlbum(%q): %v", a.Title, err)
+		t.Fatalf("UpsertAlbum(%q): %v", p.Title, err)
 	}
 	return id
 }
 
-// upsertTrack is a test helper that calls UpsertTrack and fails on error.
-func upsertTrack(t *testing.T, db *DB, albumID int64, tr TrackRecord) {
+// testUpsertTrack is a test helper that calls Q.UpsertTrack and fails on error.
+func testUpsertTrack(t *testing.T, db *DB, albumID int64, p UpsertTrackParams) {
 	t.Helper()
-	if err := db.UpsertTrack(albumID, tr); err != nil {
-		t.Fatalf("UpsertTrack(%q): %v", tr.Title, err)
+	p.AlbumID = albumID
+	if p.TitleNorm == "" {
+		p.TitleNorm = Normalize(p.Title)
 	}
+	if err := db.Q.UpsertTrack(bg, p); err != nil {
+		t.Fatalf("UpsertTrack(%q): %v", p.Title, err)
+	}
+}
+
+// testUpsertArtist is a test helper that calls EnsureArtist + UpdateArtistFull.
+func testUpsertArtist(t *testing.T, db *DB, name, mbid string, lastCheckedAt time.Time) {
+	t.Helper()
+	id, err := db.EnsureArtist(name)
+	if err != nil {
+		t.Fatalf("EnsureArtist(%q): %v", name, err)
+	}
+	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
+		Mbid:          mbid,
+		LastCheckedAt: lastCheckedAt.Format(time.RFC3339),
+		ID:            id,
+	})
+	if err != nil {
+		t.Fatalf("UpdateArtistFull(%q): %v", name, err)
+	}
+}
+
+// testFileParams builds a UpsertFileParams with sensible defaults.
+func testFileParams(path, artist, album, title string, opts ...func(*UpsertFileParams)) UpsertFileParams {
+	now := time.Now().Truncate(time.Second).Format(time.RFC3339)
+	p := UpsertFileParams{
+		Path: path, Size: 100, ModTime: now, Artist: artist, Album: album, Title: title,
+		IsAlbumArtist: 1, ScannedAt: now,
+		TitleNorm: Normalize(title), AlbumNorm: Normalize(album), ArtistNorm: Normalize(artist),
+	}
+	for _, o := range opts {
+		o(&p)
+	}
+	return p
 }
 
 func TestOpenClose(t *testing.T) {
@@ -58,12 +98,12 @@ func TestOpenClose(t *testing.T) {
 func TestAllFileMeta_Empty(t *testing.T) {
 	db := openTestDB(t)
 
-	m, err := db.AllFileMeta()
+	rows, err := db.Q.AllFileMeta(bg)
 	if err != nil {
 		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if len(m) != 0 {
-		t.Fatalf("expected empty map, got %d entries", len(m))
+	if len(rows) != 0 {
+		t.Fatalf("expected empty result, got %d entries", len(rows))
 	}
 }
 
@@ -71,32 +111,39 @@ func TestAllFileMeta_Unchanged(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	rec := FileRecord{
-		Path:      "artist/album/song.flac",
-		Size:      1000,
-		ModTime:   now,
-		Artist:    "Test",
-		Album:     "Album",
-		Title:     "Song",
-		ScannedAt: now,
+	p := UpsertFileParams{
+		Path:       "artist/album/song.flac",
+		Size:       1000,
+		ModTime:    now.Format(time.RFC3339),
+		Artist:     "Test",
+		Album:      "Album",
+		Title:      "Song",
+		ScannedAt:  now.Format(time.RFC3339),
+		TitleNorm:  Normalize("Song"),
+		AlbumNorm:  Normalize("Album"),
+		ArtistNorm: Normalize("Test"),
 	}
-	if err := db.UpsertFile(rec); err != nil {
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	m, err := db.AllFileMeta()
+	rows, err := db.Q.AllFileMeta(bg)
 	if err != nil {
 		t.Fatalf("AllFileMeta: %v", err)
 	}
-	fm, ok := m[rec.Path]
+	m := make(map[string]AllFileMetaRow, len(rows))
+	for _, r := range rows {
+		m[r.Path] = r
+	}
+	fm, ok := m[p.Path]
 	if !ok {
 		t.Fatal("expected file in map")
 	}
-	if fm.Size != rec.Size {
-		t.Fatalf("size: got %d, want %d", fm.Size, rec.Size)
+	if fm.Size != p.Size {
+		t.Fatalf("size: got %d, want %d", fm.Size, p.Size)
 	}
-	if fm.ModTime != rec.ModTime.Format(time.RFC3339) {
-		t.Fatalf("mod_time: got %s, want %s", fm.ModTime, rec.ModTime.Format(time.RFC3339))
+	if fm.ModTime != now.Format(time.RFC3339) {
+		t.Fatalf("mod_time: got %s, want %s", fm.ModTime, now.Format(time.RFC3339))
 	}
 	if fm.Title != "Song" {
 		t.Fatalf("title: got %q, want %q", fm.Title, "Song")
@@ -105,49 +152,43 @@ func TestAllFileMeta_Unchanged(t *testing.T) {
 
 func TestAllFileMeta_MultipleFiles(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
 	for i := range 3 {
-		rec := FileRecord{
-			Path:      fmt.Sprintf("artist/album/song%d.flac", i),
-			Size:      int64(1000 + i),
-			ModTime:   now,
-			Artist:    "Test",
-			Album:     "Album",
-			Title:     fmt.Sprintf("Song %d", i),
-			ScannedAt: now,
-		}
-		if err := db.UpsertFile(rec); err != nil {
+		p := testFileParams(
+			fmt.Sprintf("artist/album/song%d.flac", i),
+			"Test", "Album", fmt.Sprintf("Song %d", i),
+			func(f *UpsertFileParams) { f.Size = int64(1000 + i) },
+		)
+		if err := db.Q.UpsertFile(bg, p); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	m, err := db.AllFileMeta()
+	rows, err := db.Q.AllFileMeta(bg)
 	if err != nil {
 		t.Fatalf("AllFileMeta: %v", err)
 	}
-	if len(m) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(m))
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 entries, got %d", len(rows))
 	}
 }
 
 func TestUniqueArtists(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Zed", Album: "Z", ScannedAt: now},
-		{Path: "b/2.flac", Size: 200, ModTime: now, Artist: "Alpha", Album: "A", ScannedAt: now},
-		{Path: "c/3.flac", Size: 300, ModTime: now, Artist: "Alpha", Album: "B", ScannedAt: now},
-		{Path: "d/4.flac", Size: 400, ModTime: now, Artist: "", Album: "", ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Zed", "Z", ""),
+		testFileParams("b/2.flac", "Alpha", "A", ""),
+		testFileParams("c/3.flac", "Alpha", "B", ""),
+		testFileParams("d/4.flac", "", "", "", func(f *UpsertFileParams) { f.IsAlbumArtist = 0 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	artists, err := db.UniqueArtists()
+	artists, err := db.Q.UniqueArtists(bg)
 	if err != nil {
 		t.Fatalf("UniqueArtists: %v", err)
 	}
@@ -161,20 +202,19 @@ func TestUniqueArtists(t *testing.T) {
 
 func TestLocalAlbums(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "A", Album: "X", ScannedAt: now},
-		{Path: "a/2.flac", Size: 200, ModTime: now, Artist: "A", Album: "Y", ScannedAt: now},
-		{Path: "a/3.flac", Size: 300, ModTime: now, Artist: "A", Album: "X", ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "A", "X", ""),
+		testFileParams("a/2.flac", "A", "Y", ""),
+		testFileParams("a/3.flac", "A", "X", ""),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	albums, err := db.LocalAlbums("A")
+	albums, err := db.Q.LocalAlbums(bg, Normalize("A"))
 	if err != nil {
 		t.Fatalf("LocalAlbums: %v", err)
 	}
@@ -187,59 +227,56 @@ func TestUpsertArtistAndLookup(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	rec := ArtistRecord{
-		Name:          "Radiohead",
-		MBID:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
-		LastCheckedAt: now,
+	id, err := db.EnsureArtist("Radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
+		Mbid:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+		LastCheckedAt: now.Format(time.RFC3339),
 		LatestRelease: "A Moon Shaped Pool",
 		LatestDate:    "2016-05-08",
-	}
-	if err := db.UpsertArtist(rec); err != nil {
-		t.Fatalf("UpsertArtist: %v", err)
+		ID:            id,
+	})
+	if err != nil {
+		t.Fatalf("UpdateArtistFull: %v", err)
 	}
 
-	got, err := db.Artist("Radiohead")
+	got, err := db.Q.GetArtistByNameNorm(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Artist: %v", err)
+		t.Fatalf("GetArtistByNameNorm: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected artist, got nil")
-	}
-	if got.MBID != rec.MBID {
-		t.Fatalf("MBID mismatch: %q vs %q", got.MBID, rec.MBID)
+	if got.Mbid != "a74b1b7f-71a5-4011-9441-d0b5e4122711" {
+		t.Fatalf("MBID mismatch: %q vs %q", got.Mbid, "a74b1b7f-71a5-4011-9441-d0b5e4122711")
 	}
 }
 
 func TestArtist_NotFound(t *testing.T) {
 	db := openTestDB(t)
 
-	got, err := db.Artist("Nobody")
-	if err != nil {
-		t.Fatalf("Artist: %v", err)
-	}
-	if got != nil {
-		t.Fatalf("expected nil, got %+v", got)
+	_, err := db.Q.GetArtistByNameNorm(bg, Normalize("Nobody"))
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
 }
 
 func TestArtistSummaries(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Zed", Album: "Zebra", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "b/2.flac", Size: 200, ModTime: now, Artist: "Alpha", Album: "Apples", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "c/3.flac", Size: 300, ModTime: now, Artist: "Alpha", Album: "Bananas", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "d/4.flac", Size: 400, ModTime: now, Artist: "Alpha", Album: "Apples", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "e/5.flac", Size: 500, ModTime: now, Artist: "", Album: "", ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Zed", "Zebra", ""),
+		testFileParams("b/2.flac", "Alpha", "Apples", ""),
+		testFileParams("c/3.flac", "Alpha", "Bananas", ""),
+		testFileParams("d/4.flac", "Alpha", "Apples", ""),
+		testFileParams("e/5.flac", "", "", "", func(f *UpsertFileParams) { f.IsAlbumArtist = 0 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -247,34 +284,32 @@ func TestArtistSummaries(t *testing.T) {
 		t.Fatalf("expected 2 summaries, got %d", len(summaries))
 	}
 
-	// Ordered by artist name
 	if summaries[0].Name != "Alpha" {
 		t.Fatalf("expected first artist Alpha, got %q", summaries[0].Name)
 	}
-	if summaries[0].AlbumCount != 2 {
-		t.Fatalf("expected Alpha to have 2 albums, got %d", summaries[0].AlbumCount)
+	if summaries[0].AlbumCnt != 2 {
+		t.Fatalf("expected Alpha to have 2 albums, got %d", summaries[0].AlbumCnt)
 	}
-	if summaries[0].NewestAlbum == "" {
+	if summaries[0].Newest == "" {
 		t.Fatal("expected Alpha to have a newest album")
 	}
-
-	if summaries[0].TrackCount != 3 {
-		t.Fatalf("expected Alpha to have 3 tracks, got %d", summaries[0].TrackCount)
+	if summaries[0].TrackCnt != 3 {
+		t.Fatalf("expected Alpha to have 3 tracks, got %d", summaries[0].TrackCnt)
 	}
-	if summaries[0].Synced {
+	if summaries[0].Mbid != "" {
 		t.Fatal("expected Alpha to not be synced")
 	}
 
 	if summaries[1].Name != "Zed" {
 		t.Fatalf("expected second artist Zed, got %q", summaries[1].Name)
 	}
-	if summaries[1].AlbumCount != 1 {
-		t.Fatalf("expected Zed to have 1 album, got %d", summaries[1].AlbumCount)
+	if summaries[1].AlbumCnt != 1 {
+		t.Fatalf("expected Zed to have 1 album, got %d", summaries[1].AlbumCnt)
 	}
-	if summaries[1].TrackCount != 1 {
-		t.Fatalf("expected Zed to have 1 track, got %d", summaries[1].TrackCount)
+	if summaries[1].TrackCnt != 1 {
+		t.Fatalf("expected Zed to have 1 track, got %d", summaries[1].TrackCnt)
 	}
-	if summaries[1].Synced {
+	if summaries[1].Mbid != "" {
 		t.Fatal("expected Zed to not be synced")
 	}
 }
@@ -283,33 +318,26 @@ func TestArtistSummaries_Synced(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Radiohead", Album: "OK Computer", IsAlbumArtist: true, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Radiohead", "OK Computer", "")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Before artist record: not synced
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
-	if summaries[0].Synced {
+	if summaries[0].Mbid != "" {
 		t.Fatal("expected not synced before artist record")
 	}
 
-	// Insert artist with MBID
-	if err := db.UpsertArtist(ArtistRecord{
-		Name: "Radiohead", MBID: "abc-123", LastCheckedAt: now,
-	}); err != nil {
-		t.Fatalf("UpsertArtist: %v", err)
-	}
+	testUpsertArtist(t, db, "Radiohead", "abc-123", now)
 
-	summaries, err = db.ArtistSummaries()
+	summaries, err = db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
-	if !summaries[0].Synced {
+	if summaries[0].Mbid == "" {
 		t.Fatal("expected synced after artist record with MBID")
 	}
 }
@@ -317,7 +345,7 @@ func TestArtistSummaries_Synced(t *testing.T) {
 func TestArtistSummaries_Empty(t *testing.T) {
 	db := openTestDB(t)
 
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -328,21 +356,16 @@ func TestArtistSummaries_Empty(t *testing.T) {
 
 func TestConcurrentWrites(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Simulate concurrent writes from multiple goroutines, which triggers
-	// SQLITE_BUSY if the connection pool has more than one connection.
 	errc := make(chan error, 50)
 	for i := range 50 {
 		go func() {
-			errc <- db.UpsertFile(FileRecord{
-				Path:      fmt.Sprintf("artist/album/song%d.flac", i),
-				Size:      int64(i * 100),
-				ModTime:   now,
-				Artist:    "Test",
-				Album:     "Album",
-				ScannedAt: now,
-			})
+			p := testFileParams(
+				fmt.Sprintf("artist/album/song%d.flac", i),
+				"Test", "Album", "",
+				func(f *UpsertFileParams) { f.Size = int64(i * 100) },
+			)
+			errc <- db.Q.UpsertFile(bg, p)
 		}()
 	}
 	for range 50 {
@@ -359,15 +382,12 @@ func TestMarkArtistNotFound(t *testing.T) {
 		t.Fatalf("MarkArtistNotFound: %v", err)
 	}
 
-	got, err := db.Artist("Podcast Host")
+	got, err := db.Q.GetArtistByNameNorm(bg, Normalize("Podcast Host"))
 	if err != nil {
-		t.Fatalf("Artist: %v", err)
+		t.Fatalf("GetArtistByNameNorm: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected artist record, got nil")
-	}
-	if !got.NotFound {
-		t.Fatal("expected NotFound == true")
+	if got.NotFound != 1 {
+		t.Fatal("expected NotFound == 1")
 	}
 }
 
@@ -379,28 +399,28 @@ func TestMarkArtistNotFound_ClearedByUpsert(t *testing.T) {
 		t.Fatalf("MarkArtistNotFound: %v", err)
 	}
 
-	// Upserting a real artist record should clear not_found.
-	rec := ArtistRecord{
-		Name:          "Radiohead",
-		MBID:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
-		LastCheckedAt: now,
+	id, err := db.EnsureArtist("Radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
+		Mbid:          "a74b1b7f-71a5-4011-9441-d0b5e4122711",
+		LastCheckedAt: now.Format(time.RFC3339),
 		LatestRelease: "A Moon Shaped Pool",
 		LatestDate:    "2016-05-08",
-		NotFound:      false,
-	}
-	if err := db.UpsertArtist(rec); err != nil {
-		t.Fatalf("UpsertArtist: %v", err)
+		NotFound:      0,
+		ID:            id,
+	})
+	if err != nil {
+		t.Fatalf("UpdateArtistFull: %v", err)
 	}
 
-	got, err := db.Artist("Radiohead")
+	got, err := db.Q.GetArtistByNameNorm(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Artist: %v", err)
+		t.Fatalf("GetArtistByNameNorm: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected artist record, got nil")
-	}
-	if got.NotFound {
-		t.Fatal("expected NotFound == false after upsert")
+	if got.NotFound != 0 {
+		t.Fatal("expected NotFound == 0 after upsert")
 	}
 }
 
@@ -408,23 +428,22 @@ func TestUpsertAlbumAndQuery(t *testing.T) {
 	db := openTestDB(t)
 	artistID := ensureArtist(t, db, "Radiohead")
 
-	albums := []AlbumRecord{
-		{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
-		{Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"},
-		{Title: "A Moon Shaped Pool", MBID: "ccc", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
+	albums := []UpsertAlbumParams{
+		{Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"},
+		{Title: "Kid A", Mbid: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"},
+		{Title: "A Moon Shaped Pool", Mbid: "ccc", ReleaseDate: "2016-05-08", PrimaryType: "Album"},
 	}
 	for _, a := range albums {
-		upsertAlbum(t, db, artistID, a)
+		testUpsertAlbum(t, db, artistID, a)
 	}
 
-	got, err := db.Albums("Radiohead")
+	got, err := db.Q.ListAlbumsByArtist(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("expected 3 albums, got %d", len(got))
 	}
-	// Oldest first (ASC)
 	if got[0].Title != "OK Computer" {
 		t.Fatalf("expected oldest album first, got %q", got[0].Title)
 	}
@@ -435,53 +454,49 @@ func TestUpsertAlbumAndQuery(t *testing.T) {
 
 func TestMarkLocalTracks(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Insert local files with titles
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Radiohead", Album: "OK Computer", Title: "Airbag", ScannedAt: now},
-		{Path: "a/2.flac", Size: 200, ModTime: now, Artist: "Radiohead", Album: "OK Computer", Title: "Paranoid Android", ScannedAt: now},
-		{Path: "a/3.flac", Size: 300, ModTime: now, Artist: "Radiohead", Album: "Kid A", Title: "Everything in Its Right Place", ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag"),
+		testFileParams("a/2.flac", "Radiohead", "OK Computer", "Paranoid Android"),
+		testFileParams("a/3.flac", "Radiohead", "Kid A", "Everything in Its Right Place"),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "Radiohead")
-	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
-	kidID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A"})
-	amID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Amnesiac"})
+	okID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer"})
+	kidID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Kid A"})
+	amID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Amnesiac"})
 
-	// Insert tracks
 	tracks := []struct {
 		albumID int64
-		tr      TrackRecord
+		tr      UpsertTrackParams
 	}{
-		{okID, TrackRecord{Title: "Airbag", Position: 1}},
-		{okID, TrackRecord{Title: "Paranoid Android", Position: 2}},
-		{okID, TrackRecord{Title: "Subterranean Homesick Alien", Position: 3}},
-		{kidID, TrackRecord{Title: "Everything in Its Right Place", Position: 1}},
-		{kidID, TrackRecord{Title: "Kid A", Position: 2}},
-		{amID, TrackRecord{Title: "Packt Like Sardines in a Crushd Tin Box", Position: 1}},
+		{okID, UpsertTrackParams{Title: "Airbag", Position: 1}},
+		{okID, UpsertTrackParams{Title: "Paranoid Android", Position: 2}},
+		{okID, UpsertTrackParams{Title: "Subterranean Homesick Alien", Position: 3}},
+		{kidID, UpsertTrackParams{Title: "Everything in Its Right Place", Position: 1}},
+		{kidID, UpsertTrackParams{Title: "Kid A", Position: 2}},
+		{amID, UpsertTrackParams{Title: "Packt Like Sardines in a Crushd Tin Box", Position: 1}},
 	}
 	for _, tt := range tracks {
-		upsertTrack(t, db, tt.albumID, tt.tr)
+		testUpsertTrack(t, db, tt.albumID, tt.tr)
 	}
 
 	if err := db.MarkLocalTracks("Radiohead"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	// Check OK Computer tracks: 2 of 3 should be local
-	okTracks, err := db.Tracks("Radiohead", "OK Computer")
+	okTracks, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "OK Computer")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	localCount := 0
 	for _, tr := range okTracks {
-		if tr.Local {
+		if tr.Local == 1 {
 			localCount++
 		}
 	}
@@ -489,13 +504,12 @@ func TestMarkLocalTracks(t *testing.T) {
 		t.Fatalf("expected 2 local OK Computer tracks, got %d", localCount)
 	}
 
-	// Check Amnesiac: 0 should be local
-	amTracks, err := db.Tracks("Radiohead", "Amnesiac")
+	amTracks, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "Amnesiac")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	for _, tr := range amTracks {
-		if tr.Local {
+		if tr.Local == 1 {
 			t.Fatal("Amnesiac track should not be local")
 		}
 	}
@@ -503,66 +517,58 @@ func TestMarkLocalTracks(t *testing.T) {
 
 func TestMarkLocalTracks_FuzzyTitle(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Local files have canonical titles and track numbers from file tags
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Kryptonite", TrackNumber: 3, ScannedAt: now},
-		{Path: "a/2.flac", Size: 200, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Loser", TrackNumber: 4, ScannedAt: now},
-		{Path: "a/3.flac", Size: 300, ModTime: now, Artist: "3 Doors Down", Album: "The Better Life", Title: "Be Like That", TrackNumber: 7, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "3 Doors Down", "The Better Life", "Kryptonite", func(f *UpsertFileParams) { f.TrackNumber = 3 }),
+		testFileParams("a/2.flac", "3 Doors Down", "The Better Life", "Loser", func(f *UpsertFileParams) { f.TrackNumber = 4 }),
+		testFileParams("a/3.flac", "3 Doors Down", "The Better Life", "Be Like That", func(f *UpsertFileParams) { f.TrackNumber = 7 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "3 Doors Down")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "The Better Life"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "The Better Life"})
 
-	// MusicBrainz tracks may have release-specific title variations
-	tracks := []TrackRecord{
-		{Title: "Kryptonite", Position: 3},         // exact match
-		{Title: "Loser (radio edit)", Position: 4}, // title differs, same position
-		{Title: "Be Like That", Position: 7},       // exact match
-		{Title: "Duck and Run", Position: 5},       // not local
-		{Title: "By My Side", Position: 6},         // not local
+	tracks := []UpsertTrackParams{
+		{Title: "Kryptonite", Position: 3},
+		{Title: "Loser (radio edit)", Position: 4},
+		{Title: "Be Like That", Position: 7},
+		{Title: "Duck and Run", Position: 5},
+		{Title: "By My Side", Position: 6},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	got, err := db.Tracks("3 Doors Down", "The Better Life")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("3 Doors Down"), "The Better Life")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 
 	localByTitle := make(map[string]bool)
 	for _, tr := range got {
-		localByTitle[tr.Title] = tr.Local
+		localByTitle[tr.Title] = tr.Local == 1
 	}
 
-	// "Kryptonite" — exact title match
 	if !localByTitle["Kryptonite"] {
 		t.Error("expected Kryptonite to be local (exact match)")
 	}
-	// "Loser (radio edit)" — title differs but same artist+album+position as local "Loser"
 	if !localByTitle["Loser (radio edit)"] {
 		t.Error("expected 'Loser (radio edit)' to be local (position match)")
 	}
-	// "Be Like That" — exact match
 	if !localByTitle["Be Like That"] {
 		t.Error("expected Be Like That to be local (exact match)")
 	}
-	// "Duck and Run" — no local file
 	if localByTitle["Duck and Run"] {
 		t.Error("expected Duck and Run to NOT be local")
 	}
-	// "By My Side" — no local file
 	if localByTitle["By My Side"] {
 		t.Error("expected By My Side to NOT be local")
 	}
@@ -570,43 +576,41 @@ func TestMarkLocalTracks_FuzzyTitle(t *testing.T) {
 
 func TestMarkLocalTracks_TrackNumberOnly(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Simulate files where tags had no title but scanner extracted track number
-	files := []FileRecord{
-		{Path: "a/06.flac", Size: 100, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 6, ScannedAt: now},
-		{Path: "a/11.flac", Size: 200, ModTime: now, Artist: "10,000 Maniacs", Album: "The Earth Pressed Flat", Title: "", TrackNumber: 11, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/06.flac", "10,000 Maniacs", "The Earth Pressed Flat", "", func(f *UpsertFileParams) { f.TrackNumber = 6 }),
+		testFileParams("a/11.flac", "10,000 Maniacs", "The Earth Pressed Flat", "", func(f *UpsertFileParams) { f.TrackNumber = 11 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "10,000 Maniacs")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "The Earth Pressed Flat"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "The Earth Pressed Flat"})
 
-	tracks := []TrackRecord{
+	tracks := []UpsertTrackParams{
 		{Title: "Somebody's Heaven", Position: 6},
 		{Title: "Time Turns", Position: 11},
 		{Title: "Ellen", Position: 2},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("10,000 Maniacs"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	got, err := db.Tracks("10,000 Maniacs", "The Earth Pressed Flat")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("10,000 Maniacs"), "The Earth Pressed Flat")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 
 	localCount := 0
 	for _, tr := range got {
-		if tr.Local {
+		if tr.Local == 1 {
 			localCount++
 		}
 	}
@@ -617,40 +621,34 @@ func TestMarkLocalTracks_TrackNumberOnly(t *testing.T) {
 
 func TestMarkLocalTracks_ClearsStale(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Insert a local file
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now, Artist: "A", Album: "X", Title: "Song", ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "A", "X", "Song")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
 	artistID := ensureArtist(t, db, "A")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "X"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "X"})
 
-	// Insert a track and mark it local
-	upsertTrack(t, db, albumID, TrackRecord{Title: "Song", Position: 1, Local: true})
+	testUpsertTrack(t, db, albumID, UpsertTrackParams{Title: "Song", Position: 1, Local: 1})
 
-	// Remove the file (simulate library change)
 	if _, err := db.RemoveStaleFiles(map[string]struct{}{}); err != nil {
 		t.Fatalf("RemoveStaleFiles: %v", err)
 	}
 
-	// MarkLocalTracks should clear the stale local flag
 	if err := db.MarkLocalTracks("A"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	tracks, err := db.Tracks("A", "X")
+	tracks, err := db.Q.ListTracksByAlbum(bg, Normalize("A"), "X")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	if len(tracks) != 1 {
 		t.Fatalf("expected 1 track, got %d", len(tracks))
 	}
-	if tracks[0].Local {
-		t.Fatal("expected Local == false after file removed")
+	if tracks[0].Local == 1 {
+		t.Fatal("expected Local == 0 after file removed")
 	}
 }
 
@@ -658,25 +656,24 @@ func TestUpsertTrackAndQuery(t *testing.T) {
 	db := openTestDB(t)
 
 	artistID := ensureArtist(t, db, "Radiohead")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer"})
 
-	tracks := []TrackRecord{
-		{Title: "Paranoid Android", Position: 2, MBID: "aaa", LengthMS: 383000},
-		{Title: "Airbag", Position: 1, MBID: "bbb", LengthMS: 284000},
-		{Title: "Lucky", Position: 3, MBID: "ccc", LengthMS: 258000},
+	tracks := []UpsertTrackParams{
+		{Title: "Paranoid Android", Position: 2, Mbid: "aaa", LengthMs: 383000},
+		{Title: "Airbag", Position: 1, Mbid: "bbb", LengthMs: 284000},
+		{Title: "Lucky", Position: 3, Mbid: "ccc", LengthMs: 258000},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
-	got, err := db.Tracks("Radiohead", "OK Computer")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "OK Computer")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("expected 3 tracks, got %d", len(got))
 	}
-	// Should be ordered by position
 	if got[0].Title != "Airbag" {
 		t.Fatalf("expected first track Airbag, got %q", got[0].Title)
 	}
@@ -692,19 +689,18 @@ func TestUpsertTrack_UpdatesOnConflict(t *testing.T) {
 	db := openTestDB(t)
 
 	artistID := ensureArtist(t, db, "Radiohead")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer"})
 
-	tr := TrackRecord{Title: "Airbag", Position: 1, MBID: "aaa", LengthMS: 284000}
-	upsertTrack(t, db, albumID, tr)
+	tr := UpsertTrackParams{Title: "Airbag", Position: 1, Mbid: "aaa", LengthMs: 284000}
+	testUpsertTrack(t, db, albumID, tr)
 
-	// Update position and length
 	tr.Position = 5
-	tr.LengthMS = 300000
-	upsertTrack(t, db, albumID, tr)
+	tr.LengthMs = 300000
+	testUpsertTrack(t, db, albumID, tr)
 
-	got, err := db.Tracks("Radiohead", "OK Computer")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "OK Computer")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected 1 track after upsert, got %d", len(got))
@@ -712,8 +708,8 @@ func TestUpsertTrack_UpdatesOnConflict(t *testing.T) {
 	if got[0].Position != 5 {
 		t.Fatalf("expected position 5, got %d", got[0].Position)
 	}
-	if got[0].LengthMS != 300000 {
-		t.Fatalf("expected length 300000, got %d", got[0].LengthMS)
+	if got[0].LengthMs != 300000 {
+		t.Fatalf("expected length 300000, got %d", got[0].LengthMs)
 	}
 }
 
@@ -722,26 +718,21 @@ func TestAlbumsWithTrackCounts(t *testing.T) {
 
 	artistID := ensureArtist(t, db, "Radiohead")
 
-	// Create albums
-	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
-	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A", MBID: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
+	okID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Kid A", Mbid: "bbb", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
 
-	// Add tracks to OK Computer (3 total, 2 local)
-	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
-	upsertTrack(t, db, okID, TrackRecord{Title: "Paranoid Android", Position: 2, Local: true})
-	upsertTrack(t, db, okID, TrackRecord{Title: "Lucky", Position: 3})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Airbag", Position: 1, Local: 1})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Paranoid Android", Position: 2, Local: 1})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Lucky", Position: 3})
 
-	// Kid A has no tracks
-
-	got, err := db.Albums("Radiohead")
+	got, err := db.Q.ListAlbumsByArtist(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 albums, got %d", len(got))
 	}
 
-	// OK Computer (1997) should be first (oldest, ASC)
 	if got[0].Title != "OK Computer" {
 		t.Fatalf("expected OK Computer first, got %q", got[0].Title)
 	}
@@ -752,7 +743,6 @@ func TestAlbumsWithTrackCounts(t *testing.T) {
 		t.Fatalf("expected 2 local tracks, got %d", got[0].LocalTracks)
 	}
 
-	// Kid A (2000) second
 	if got[1].Title != "Kid A" {
 		t.Fatalf("expected Kid A second, got %q", got[1].Title)
 	}
@@ -763,22 +753,12 @@ func TestAlbumsWithTrackCounts(t *testing.T) {
 
 func TestFileTitleMigration(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	rec := FileRecord{
-		Path:      "a/1.flac",
-		Size:      100,
-		ModTime:   now,
-		Artist:    "Radiohead",
-		Album:     "OK Computer",
-		Title:     "Airbag",
-		ScannedAt: now,
-	}
-	if err := db.UpsertFile(rec); err != nil {
+	p := testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Read it back via a raw query to verify title round-trips
 	var title string
 	err := db.db.QueryRow("SELECT title FROM files WHERE path = ?", "a/1.flac").Scan(&title)
 	if err != nil {
@@ -792,7 +772,6 @@ func TestFileTitleMigration(t *testing.T) {
 func TestMigrationFromV0(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	// Create a raw DB with the old schema (no track_number column).
 	rawDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open raw db: %v", err)
@@ -841,14 +820,12 @@ func TestMigrationFromV0(t *testing.T) {
 		t.Fatalf("close raw db: %v", err)
 	}
 
-	// Reopen via state.Open which triggers migrate().
 	db, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open after old schema: %v", err)
 	}
 	defer db.Close()
 
-	// Verify the new integer PK schema exists.
 	var colCount int
 	err = db.db.QueryRow(
 		"SELECT COUNT(*) FROM pragma_table_info('artists') WHERE name = 'id'",
@@ -860,7 +837,6 @@ func TestMigrationFromV0(t *testing.T) {
 		t.Fatal("expected id column on artists after migration")
 	}
 
-	// Verify user_version is 8.
 	var version int
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
@@ -873,7 +849,6 @@ func TestMigrationFromV0(t *testing.T) {
 func TestMigrationIdempotent(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	// First open: creates fresh DB at latest version.
 	db1, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("first Open: %v", err)
@@ -882,7 +857,6 @@ func TestMigrationIdempotent(t *testing.T) {
 		t.Fatalf("first Close: %v", err)
 	}
 
-	// Second open: migrate() should be a no-op.
 	db2, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("second Open: %v", err)
@@ -900,15 +874,14 @@ func TestMigrationIdempotent(t *testing.T) {
 
 func TestRemoveStaleFiles(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "A", Album: "X", ScannedAt: now},
-		{Path: "b/2.flac", Size: 200, ModTime: now, Artist: "B", Album: "Y", ScannedAt: now},
-		{Path: "c/3.flac", Size: 300, ModTime: now, Artist: "C", Album: "Z", ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "A", "X", ""),
+		testFileParams("b/2.flac", "B", "Y", ""),
+		testFileParams("c/3.flac", "C", "Z", ""),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
@@ -925,7 +898,7 @@ func TestRemoveStaleFiles(t *testing.T) {
 		t.Fatalf("expected 2 removed, got %d", removed)
 	}
 
-	artists, err := db.UniqueArtists()
+	artists, err := db.Q.UniqueArtists(bg)
 	if err != nil {
 		t.Fatalf("UniqueArtists: %v", err)
 	}
@@ -936,41 +909,39 @@ func TestRemoveStaleFiles(t *testing.T) {
 
 func TestMarkLocalTracks_NormalizedTitle(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Local file has plain title; MB track has parenthetical suffix
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Mellow Gold", Title: "Loser", TrackNumber: 1, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Beck", "Mellow Gold", "Loser", func(f *UpsertFileParams) { f.TrackNumber = 1 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "Beck")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Mellow Gold"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Mellow Gold"})
 
-	tracks := []TrackRecord{
+	tracks := []UpsertTrackParams{
 		{Title: "Loser (radio edit)", Position: 1},
 		{Title: "Pay No Mind", Position: 2},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("Beck"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	got, err := db.Tracks("Beck", "Mellow Gold")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("Beck"), "Mellow Gold")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 
 	localByTitle := make(map[string]bool)
 	for _, tr := range got {
-		localByTitle[tr.Title] = tr.Local
+		localByTitle[tr.Title] = tr.Local == 1
 	}
 
 	if !localByTitle["Loser (radio edit)"] {
@@ -983,37 +954,35 @@ func TestMarkLocalTracks_NormalizedTitle(t *testing.T) {
 
 func TestMarkLocalTracks_NormalizedAlbum(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Local file has "Away From The Sun"; MB has "Away from the Sun"
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "3 Doors Down", Album: "Away From The Sun", Title: "When I'm Gone", TrackNumber: 1, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "3 Doors Down", "Away From The Sun", "When I'm Gone", func(f *UpsertFileParams) { f.TrackNumber = 1 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "3 Doors Down")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Away from the Sun"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Away from the Sun"})
 
-	tracks := []TrackRecord{
+	tracks := []UpsertTrackParams{
 		{Title: "When I'm Gone", Position: 1},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("3 Doors Down"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	got, err := db.Tracks("3 Doors Down", "Away from the Sun")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("3 Doors Down"), "Away from the Sun")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
-	if len(got) != 1 || !got[0].Local {
+	if len(got) != 1 || got[0].Local != 1 {
 		t.Error("expected track to be local despite album casing difference")
 	}
 }
@@ -1022,25 +991,25 @@ func TestKnownAlbumMBIDs(t *testing.T) {
 	db := openTestDB(t)
 	artistID := ensureArtist(t, db, "Radiohead")
 
-	// Album with tracks → should be in known set
-	okID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer", MBID: "rg-okc", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
-	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, MBID: "tr-1"})
+	okID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer", Mbid: "rg-okc", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Airbag", Position: 1, Mbid: "tr-1"})
 
-	// Album without tracks → should NOT be in known set
-	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Kid A", MBID: "rg-kida", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Kid A", Mbid: "rg-kida", ReleaseDate: "2000-10-02", PrimaryType: "Album"})
 
-	// Album with empty MBID → should NOT be in known set
-	amID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Amnesiac", MBID: "", ReleaseDate: "2001-06-05", PrimaryType: "Album"})
-	upsertTrack(t, db, amID, TrackRecord{Title: "Packt", Position: 1})
+	amID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Amnesiac", Mbid: "", ReleaseDate: "2001-06-05", PrimaryType: "Album"})
+	testUpsertTrack(t, db, amID, UpsertTrackParams{Title: "Packt", Position: 1})
 
-	// Different artist → should not appear
 	beckID := ensureArtist(t, db, "Beck")
-	mgID := upsertAlbum(t, db, beckID, AlbumRecord{Title: "Mellow Gold", MBID: "rg-mg", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
-	upsertTrack(t, db, mgID, TrackRecord{Title: "Loser", Position: 1, MBID: "tr-2"})
+	mgID := testUpsertAlbum(t, db, beckID, UpsertAlbumParams{Title: "Mellow Gold", Mbid: "rg-mg", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
+	testUpsertTrack(t, db, mgID, UpsertTrackParams{Title: "Loser", Position: 1, Mbid: "tr-2"})
 
-	known, err := db.KnownAlbumMBIDs("Radiohead")
+	mbids, err := db.Q.ListKnownAlbumMBIDs(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("KnownAlbumMBIDs: %v", err)
+		t.Fatalf("ListKnownAlbumMBIDs: %v", err)
+	}
+	known := make(map[string]struct{}, len(mbids))
+	for _, m := range mbids {
+		known[m] = struct{}{}
 	}
 
 	if _, ok := known["rg-okc"]; !ok {
@@ -1059,41 +1028,39 @@ func TestKnownAlbumMBIDs(t *testing.T) {
 
 func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Local file on album "Greatest Hits"; MB track on album "Mellow Gold"
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Greatest Hits", Title: "Loser", TrackNumber: 1, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Beck", "Greatest Hits", "Loser", func(f *UpsertFileParams) { f.TrackNumber = 1 }),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
 	artistID := ensureArtist(t, db, "Beck")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Mellow Gold"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Mellow Gold"})
 
-	tracks := []TrackRecord{
+	tracks := []UpsertTrackParams{
 		{Title: "Loser", Position: 1},
 		{Title: "Pay No Mind", Position: 2},
 	}
 	for _, tr := range tracks {
-		upsertTrack(t, db, albumID, tr)
+		testUpsertTrack(t, db, albumID, tr)
 	}
 
 	if err := db.MarkLocalTracks("Beck"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	got, err := db.Tracks("Beck", "Mellow Gold")
+	got, err := db.Q.ListTracksByAlbum(bg, Normalize("Beck"), "Mellow Gold")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 
 	localByTitle := make(map[string]bool)
 	for _, tr := range got {
-		localByTitle[tr.Title] = tr.Local
+		localByTitle[tr.Title] = tr.Local == 1
 	}
 
 	if !localByTitle["Loser"] {
@@ -1107,7 +1074,6 @@ func TestMarkLocalTracks_CrossAlbum(t *testing.T) {
 func TestGetSetFollowed(t *testing.T) {
 	db := openTestDB(t)
 
-	// Unknown artist defaults to followed.
 	followed, err := db.IsFollowed("Unknown Artist")
 	if err != nil {
 		t.Fatalf("IsFollowed unknown: %v", err)
@@ -1116,7 +1082,6 @@ func TestGetSetFollowed(t *testing.T) {
 		t.Fatal("expected unknown artist to be followed by default")
 	}
 
-	// Toggle off.
 	if err := db.SetFollowed("Test Artist", false); err != nil {
 		t.Fatalf("SetFollowed false: %v", err)
 	}
@@ -1128,7 +1093,6 @@ func TestGetSetFollowed(t *testing.T) {
 		t.Fatal("expected not followed after SetFollowed(false)")
 	}
 
-	// Toggle on.
 	if err := db.SetFollowed("Test Artist", true); err != nil {
 		t.Fatalf("SetFollowed true: %v", err)
 	}
@@ -1140,7 +1104,6 @@ func TestGetSetFollowed(t *testing.T) {
 		t.Fatal("expected followed after SetFollowed(true)")
 	}
 
-	// Verify no duplicate rows exist.
 	var rowCount int
 	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists WHERE name_norm = ?", Normalize("Test Artist")).Scan(&rowCount); err != nil {
 		t.Fatalf("count rows: %v", err)
@@ -1152,26 +1115,22 @@ func TestGetSetFollowed(t *testing.T) {
 
 func TestAllFileMeta_EmptyTitle(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	rec := FileRecord{
-		Path:      "artist/album/song.flac",
-		Size:      1000,
-		ModTime:   now,
-		Artist:    "Test",
-		Album:     "Album",
-		Title:     "", // empty — signals tags were not read
-		ScannedAt: now,
-	}
-	if err := db.UpsertFile(rec); err != nil {
+	p := testFileParams("artist/album/song.flac", "Test", "Album", "")
+	p.Size = 1000
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	m, err := db.AllFileMeta()
+	rows, err := db.Q.AllFileMeta(bg)
 	if err != nil {
 		t.Fatalf("AllFileMeta: %v", err)
 	}
-	fm := m[rec.Path]
+	m := make(map[string]AllFileMetaRow, len(rows))
+	for _, r := range rows {
+		m[r.Path] = r
+	}
+	fm := m[p.Path]
 	if fm.Title != "" {
 		t.Fatalf("expected empty title, got %q", fm.Title)
 	}
@@ -1181,17 +1140,17 @@ func TestAlbums_SecondaryTypes(t *testing.T) {
 	db := openTestDB(t)
 
 	artistID := ensureArtist(t, db, "Radiohead")
-	upsertAlbum(t, db, artistID, AlbumRecord{
+	testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
 		Title:          "OK Computer OKNOTOK",
-		MBID:           "aaa",
+		Mbid:           "aaa",
 		ReleaseDate:    "2017-06-23",
 		PrimaryType:    "Album",
 		SecondaryTypes: "Compilation",
 	})
 
-	got, err := db.Albums("Radiohead")
+	got, err := db.Q.ListAlbumsByArtist(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("expected 1 album, got %d", len(got))
@@ -1203,36 +1162,30 @@ func TestAlbums_SecondaryTypes(t *testing.T) {
 
 func TestTracks_LocalRoundTrip(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Insert local file so MarkLocalTracks can match it.
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now,
-		Artist: "Radiohead", Album: "OK Computer", Title: "Airbag",
-		TrackNumber: 1, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(f *UpsertFileParams) { f.TrackNumber = 1 })
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
 	artistID := ensureArtist(t, db, "Radiohead")
-	albumID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "OK Computer"})
+	albumID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "OK Computer"})
 
-	// Insert track with Local=true explicitly.
-	upsertTrack(t, db, albumID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
+	testUpsertTrack(t, db, albumID, UpsertTrackParams{Title: "Airbag", Position: 1, Local: 1})
 
 	if err := db.MarkLocalTracks("Radiohead"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	tracks, err := db.Tracks("Radiohead", "OK Computer")
+	tracks, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "OK Computer")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	if len(tracks) != 1 {
 		t.Fatalf("expected 1 track, got %d", len(tracks))
 	}
-	if !tracks[0].Local {
-		t.Fatal("expected Local == true for matched track")
+	if tracks[0].Local != 1 {
+		t.Fatal("expected Local == 1 for matched track")
 	}
 }
 
@@ -1240,38 +1193,39 @@ func TestUpsertArtist_UpdateFields(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	first := ArtistRecord{
-		Name:          "Radiohead",
-		MBID:          "mbid-v1",
-		LastCheckedAt: now,
+	id, err := db.EnsureArtist("Radiohead")
+	if err != nil {
+		t.Fatalf("EnsureArtist: %v", err)
+	}
+	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
+		Mbid:          "mbid-v1",
+		LastCheckedAt: now.Format(time.RFC3339),
 		LatestRelease: "Pablo Honey",
 		LatestDate:    "1993-02-22",
-	}
-	if err := db.UpsertArtist(first); err != nil {
-		t.Fatalf("UpsertArtist first: %v", err)
+		ID:            id,
+	})
+	if err != nil {
+		t.Fatalf("UpdateArtistFull first: %v", err)
 	}
 
 	later := now.Add(time.Hour)
-	second := ArtistRecord{
-		Name:          "Radiohead",
-		MBID:          "mbid-v2",
-		LastCheckedAt: later,
+	err = db.Q.UpdateArtistFull(bg, UpdateArtistFullParams{
+		Mbid:          "mbid-v2",
+		LastCheckedAt: later.Format(time.RFC3339),
 		LatestRelease: "A Moon Shaped Pool",
 		LatestDate:    "2016-05-08",
-	}
-	if err := db.UpsertArtist(second); err != nil {
-		t.Fatalf("UpsertArtist second: %v", err)
+		ID:            id,
+	})
+	if err != nil {
+		t.Fatalf("UpdateArtistFull second: %v", err)
 	}
 
-	got, err := db.Artist("Radiohead")
+	got, err := db.Q.GetArtistByNameNorm(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Artist: %v", err)
+		t.Fatalf("GetArtistByNameNorm: %v", err)
 	}
-	if got == nil {
-		t.Fatal("expected artist record, got nil")
-	}
-	if got.MBID != "mbid-v2" {
-		t.Fatalf("expected MBID %q, got %q", "mbid-v2", got.MBID)
+	if got.Mbid != "mbid-v2" {
+		t.Fatalf("expected MBID %q, got %q", "mbid-v2", got.Mbid)
 	}
 	if got.LatestRelease != "A Moon Shaped Pool" {
 		t.Fatalf("expected LatestRelease %q, got %q", "A Moon Shaped Pool", got.LatestRelease)
@@ -1283,33 +1237,27 @@ func TestUpsertArtist_UpdateFields(t *testing.T) {
 
 func TestArtistSummaries_HasNew(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Seed local files for two artists.
-	for _, f := range []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Radiohead", Album: "OK Computer", Title: "Airbag", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Beck", Album: "Mellow Gold", Title: "Loser", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "c/1.flac", Size: 100, ModTime: now, Artist: "Bjork", Album: "Debut", Title: "Human Behaviour", IsAlbumArtist: true, ScannedAt: now},
+	for _, f := range []UpsertFileParams{
+		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag"),
+		testFileParams("b/1.flac", "Beck", "Mellow Gold", "Loser"),
+		testFileParams("c/1.flac", "Bjork", "Debut", "Human Behaviour"),
 	} {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	// Radiohead: catalog has albums from 1997 and 2016; local tracks on 1997 album only → HasNew = true
 	rhID := ensureArtist(t, db, "Radiohead")
-	okID := upsertAlbum(t, db, rhID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
-	upsertAlbum(t, db, rhID, AlbumRecord{Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
-	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
+	okID := testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Airbag", Position: 1, Local: 1})
 
-	// Beck: catalog only has the album the user already has locally → HasNew = false
 	beckID := ensureArtist(t, db, "Beck")
-	mgID := upsertAlbum(t, db, beckID, AlbumRecord{Title: "Mellow Gold", MBID: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
-	upsertTrack(t, db, mgID, TrackRecord{Title: "Loser", Position: 1, Local: true})
+	mgID := testUpsertAlbum(t, db, beckID, UpsertAlbumParams{Title: "Mellow Gold", Mbid: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album"})
+	testUpsertTrack(t, db, mgID, UpsertTrackParams{Title: "Loser", Position: 1, Local: 1})
 
-	// Bjork: not synced (no albums/tracks in catalog) → HasNew = false
-
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -1317,100 +1265,88 @@ func TestArtistSummaries_HasNew(t *testing.T) {
 		t.Fatalf("expected 3 summaries, got %d", len(summaries))
 	}
 
-	byName := make(map[string]ArtistSummary)
+	byName := make(map[string]ArtistSummariesRow)
 	for _, s := range summaries {
 		byName[s.Name] = s
 	}
 
-	if !byName["Radiohead"].HasNew {
-		t.Error("expected Radiohead HasNew = true (catalog album 2016 > local 1997)")
+	if byName["Radiohead"].HasNew != 1 {
+		t.Error("expected Radiohead HasNew = 1 (catalog album 2016 > local 1997)")
 	}
-	if byName["Beck"].HasNew {
-		t.Error("expected Beck HasNew = false (no catalog albums newer than local)")
+	if byName["Beck"].HasNew != 0 {
+		t.Error("expected Beck HasNew = 0 (no catalog albums newer than local)")
 	}
-	if byName["Bjork"].HasNew {
-		t.Error("expected Bjork HasNew = false (not synced)")
+	if byName["Bjork"].HasNew != 0 {
+		t.Error("expected Bjork HasNew = 0 (not synced)")
 	}
 }
 
 func TestArtistSummaries_FollowedField(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Seed a file so the artist appears in ArtistSummaries.
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now,
-		Artist: "Radiohead", Album: "OK Computer", IsAlbumArtist: true, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Radiohead", "OK Computer", "")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Default (no artists row) should be followed.
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries (default): %v", err)
 	}
 	if len(summaries) != 1 {
 		t.Fatalf("expected 1 summary, got %d", len(summaries))
 	}
-	if !summaries[0].Followed {
-		t.Fatal("expected Followed=true by default")
+	if summaries[0].Followed != 1 {
+		t.Fatal("expected Followed=1 by default")
 	}
 
-	// Unfollow and verify.
 	if err := db.SetFollowed("Radiohead", false); err != nil {
 		t.Fatalf("SetFollowed: %v", err)
 	}
-	summaries, err = db.ArtistSummaries()
+	summaries, err = db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries (after unfollow): %v", err)
 	}
-	if summaries[0].Followed {
-		t.Fatal("expected Followed=false after unfollow")
+	if summaries[0].Followed != 0 {
+		t.Fatal("expected Followed=0 after unfollow")
 	}
 
-	// Re-follow and verify.
 	if err := db.SetFollowed("Radiohead", true); err != nil {
 		t.Fatalf("SetFollowed: %v", err)
 	}
-	summaries, err = db.ArtistSummaries()
+	summaries, err = db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries (after re-follow): %v", err)
 	}
-	if !summaries[0].Followed {
-		t.Fatal("expected Followed=true after re-follow")
+	if summaries[0].Followed != 1 {
+		t.Fatal("expected Followed=1 after re-follow")
 	}
 }
 
 func TestAlbums_DeduplicatesArtistNameVariants(t *testing.T) {
 	db := openTestDB(t)
 
-	// With integer PKs, both name variants resolve to the same artist_id,
-	// so there's no duplication at the album level.
 	artistID := ensureArtist(t, db, "Asaf Avidan")
 
-	gsID := upsertAlbum(t, db, artistID, AlbumRecord{Title: "Gold Shadow", MBID: "aaa", ReleaseDate: "2015-01-26", PrimaryType: "Album"})
-	upsertAlbum(t, db, artistID, AlbumRecord{Title: "Anagnorisis", MBID: "bbb", ReleaseDate: "2020-07-03", PrimaryType: "Album"})
+	gsID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Gold Shadow", Mbid: "aaa", ReleaseDate: "2015-01-26", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, artistID, UpsertAlbumParams{Title: "Anagnorisis", Mbid: "bbb", ReleaseDate: "2020-07-03", PrimaryType: "Album"})
 
-	// Calling EnsureArtist with a different casing returns the same ID
 	artistID2 := ensureArtist(t, db, "asaf avidan")
 	if artistID2 != artistID {
 		t.Fatalf("expected same artist ID for different casing, got %d vs %d", artistID, artistID2)
 	}
 
-	// Add tracks
-	upsertTrack(t, db, gsID, TrackRecord{Title: "Over My Head", Position: 1, Local: true})
-	upsertTrack(t, db, gsID, TrackRecord{Title: "My Old Pain", Position: 2})
+	testUpsertTrack(t, db, gsID, UpsertTrackParams{Title: "Over My Head", Position: 1, Local: 1})
+	testUpsertTrack(t, db, gsID, UpsertTrackParams{Title: "My Old Pain", Position: 2})
 
-	got, err := db.Albums("Asaf Avidan")
+	got, err := db.Q.ListAlbumsByArtist(bg, Normalize("Asaf Avidan"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected 2 unique albums, got %d", len(got))
 	}
 
-	// Verify track counts are correct (not doubled)
 	for _, a := range got {
 		if a.Title == "Gold Shadow" {
 			if a.TotalTracks != 2 {
@@ -1425,23 +1361,20 @@ func TestAlbums_DeduplicatesArtistNameVariants(t *testing.T) {
 
 func TestArtistSummaries_MergesByNorm(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Insert files with different casings of the same artist name.
-	// "Alice In Chains" (3 files) vs "Alice in Chains" (1 file) — should merge.
-	files := []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Dirt", Title: "Rooster", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "a/2.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Dirt", Title: "Down in a Hole", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "a/3.flac", Size: 100, ModTime: now, Artist: "Alice In Chains", Album: "Jar of Flies", Title: "No Excuses", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Alice in Chains", Album: "Facelift", Title: "Man in the Box", IsAlbumArtist: true, ScannedAt: now},
+	files := []UpsertFileParams{
+		testFileParams("a/1.flac", "Alice In Chains", "Dirt", "Rooster"),
+		testFileParams("a/2.flac", "Alice In Chains", "Dirt", "Down in a Hole"),
+		testFileParams("a/3.flac", "Alice In Chains", "Jar of Flies", "No Excuses"),
+		testFileParams("b/1.flac", "Alice in Chains", "Facelift", "Man in the Box"),
 	}
 	for _, f := range files {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -1449,28 +1382,26 @@ func TestArtistSummaries_MergesByNorm(t *testing.T) {
 	if len(summaries) != 1 {
 		names := make([]string, len(summaries))
 		for i, s := range summaries {
-			names[i] = fmt.Sprintf("%q (tracks=%d)", s.Name, s.TrackCount)
+			names[i] = fmt.Sprintf("%q (tracks=%d)", s.Name, s.TrackCnt)
 		}
 		t.Fatalf("expected 1 merged artist, got %d: %v", len(summaries), names)
 	}
 
 	s := summaries[0]
-	// Canonical name should be the most-used variant.
 	if s.Name != "Alice In Chains" {
 		t.Errorf("expected canonical name %q, got %q", "Alice In Chains", s.Name)
 	}
-	if s.TrackCount != 4 {
-		t.Errorf("expected 4 tracks, got %d", s.TrackCount)
+	if s.TrackCnt != 4 {
+		t.Errorf("expected 4 tracks, got %d", s.TrackCnt)
 	}
-	if s.AlbumCount != 3 {
-		t.Errorf("expected 3 albums (Dirt, Jar of Flies, Facelift), got %d", s.AlbumCount)
+	if s.AlbumCnt != 3 {
+		t.Errorf("expected 3 albums (Dirt, Jar of Flies, Facelift), got %d", s.AlbumCnt)
 	}
 }
 
 func TestEnsureArtist(t *testing.T) {
 	db := openTestDB(t)
 
-	// First call creates
 	id1, err := db.EnsureArtist("Radiohead")
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
@@ -1479,7 +1410,6 @@ func TestEnsureArtist(t *testing.T) {
 		t.Fatal("expected non-zero ID")
 	}
 
-	// Second call with same name returns same ID
 	id2, err := db.EnsureArtist("Radiohead")
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
@@ -1488,7 +1418,6 @@ func TestEnsureArtist(t *testing.T) {
 		t.Fatalf("expected same ID %d, got %d", id1, id2)
 	}
 
-	// Different casing returns same ID
 	id3, err := db.EnsureArtist("radiohead")
 	if err != nil {
 		t.Fatalf("EnsureArtist: %v", err)
@@ -1498,53 +1427,37 @@ func TestEnsureArtist(t *testing.T) {
 	}
 }
 
-// TestTrackCounts_ConsistentBetweenSummariesAndAlbums verifies that the track
-// counts reported by ArtistSummaries match the per-album counts from Albums().
-// Regression test for #4qr-gn0 / #1lk-md3.
 func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	// Seed a local file so the artist appears in summaries.
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now,
-		Artist: "Amy Lee", Album: "Recover", Title: "Use My Voice",
-		IsAlbumArtist: true, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Amy Lee", "Recover", "Use My Voice")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Create artist with MBID (synced), album, and tracks.
-	if err := db.UpsertArtist(ArtistRecord{
-		Name: "Amy Lee", MBID: "mbid-amylee", LastCheckedAt: now,
-	}); err != nil {
-		t.Fatalf("UpsertArtist: %v", err)
-	}
+	testUpsertArtist(t, db, "Amy Lee", "mbid-amylee", now)
 	artistID := ensureArtist(t, db, "Amy Lee")
 
-	// Album 1: has a track that matches local file
-	a1ID := upsertAlbum(t, db, artistID, AlbumRecord{
-		Title: "Recover", MBID: "aaa", ReleaseDate: "2023-04-14", PrimaryType: "Album",
+	a1ID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
+		Title: "Recover", Mbid: "aaa", ReleaseDate: "2023-04-14", PrimaryType: "Album",
 	})
 	for i, title := range []string{"Use My Voice", "Blind Faith", "Love Exists"} {
-		upsertTrack(t, db, a1ID, TrackRecord{Title: title, Position: i + 1})
+		testUpsertTrack(t, db, a1ID, UpsertTrackParams{Title: title, Position: int64(i + 1)})
 	}
 
-	// Album 2: no matching local files at all
-	a2ID := upsertAlbum(t, db, artistID, AlbumRecord{
-		Title: "Dream Too Much", MBID: "bbb", ReleaseDate: "2016-09-30", PrimaryType: "Album",
+	a2ID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
+		Title: "Dream Too Much", Mbid: "bbb", ReleaseDate: "2016-09-30", PrimaryType: "Album",
 	})
 	for i, title := range []string{"I'm Not Tired", "Rubber Duckie"} {
-		upsertTrack(t, db, a2ID, TrackRecord{Title: title, Position: i + 1})
+		testUpsertTrack(t, db, a2ID, UpsertTrackParams{Title: title, Position: int64(i + 1)})
 	}
 
-	// Run MarkLocalTracks to set local flags
 	if err := db.MarkLocalTracks("Amy Lee"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	// ArtistSummaries local track count must equal sum of per-album local counts.
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -1555,32 +1468,35 @@ func TestTrackCounts_ConsistentBetweenSummariesAndAlbums(t *testing.T) {
 		t.Fatalf("ArtistSummaries: expected 5 total tracks, got %d", summaries[0].TotalTracks)
 	}
 
-	albums, err := db.Albums("Amy Lee")
+	albums, err := db.Q.ListAlbumsByArtist(bg, Normalize("Amy Lee"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 
-	albumLocalSum := 0
+	var albumLocalSum int64
 	for _, a := range albums {
 		albumLocalSum += a.LocalTracks
 	}
 
-	if summaries[0].TrackCount != albumLocalSum {
-		t.Fatalf("ArtistSummaries.TrackCount (%d) != sum of album LocalTracks (%d)",
-			summaries[0].TrackCount, albumLocalSum)
+	s := summaries[0]
+	effectiveTrackCount := s.TrackCnt
+	if s.Mbid != "" && s.LocalTracks > effectiveTrackCount {
+		effectiveTrackCount = s.LocalTracks
+	}
+	if effectiveTrackCount != albumLocalSum {
+		t.Fatalf("effective TrackCount (%d) != sum of album LocalTracks (%d)",
+			effectiveTrackCount, albumLocalSum)
 	}
 }
 
 func TestMigrationV7toV8_WithData(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	// Create a v7 database with data to test the migration
 	rawDB, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		t.Fatalf("open raw db: %v", err)
 	}
 
-	// Set up v7 schema
 	const v7Schema = `
 	PRAGMA user_version = 7;
 	CREATE TABLE files (
@@ -1634,7 +1550,6 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 		t.Fatalf("exec v7 schema: %v", err)
 	}
 
-	// Insert test data with name variants
 	if _, err := rawDB.Exec(`
 		INSERT INTO artists (name, mbid, name_norm, last_checked_at) VALUES
 			('Radiohead', 'mbid-rh', 'radiohead', '2024-01-01T00:00:00Z'),
@@ -1653,14 +1568,12 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 		t.Fatalf("close raw db: %v", err)
 	}
 
-	// Open with migration
 	db, err := Open(dbPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	defer db.Close()
 
-	// Verify version
 	var version int
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
@@ -1669,7 +1582,6 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 		t.Fatalf("expected version 11, got %d", version)
 	}
 
-	// Verify deduplicated artists (both variants → 1 row)
 	var artistCount int
 	if err := db.db.QueryRow("SELECT COUNT(*) FROM artists").Scan(&artistCount); err != nil {
 		t.Fatalf("count artists: %v", err)
@@ -1678,38 +1590,34 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 		t.Fatalf("expected 1 artist after dedup, got %d", artistCount)
 	}
 
-	// Verify deduplicated albums (duplicate "OK Computer" → 1 row)
-	albums, err := db.Albums("Radiohead")
+	albums, err := db.Q.ListAlbumsByArtist(bg, Normalize("Radiohead"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
 	if len(albums) != 2 {
 		t.Fatalf("expected 2 albums (OK Computer, Kid A), got %d", len(albums))
 	}
 
-	// Verify tracks survived
-	tracks, err := db.Tracks("Radiohead", "OK Computer")
+	tracks, err := db.Q.ListTracksByAlbum(bg, Normalize("Radiohead"), "OK Computer")
 	if err != nil {
-		t.Fatalf("Tracks: %v", err)
+		t.Fatalf("ListTracksByAlbum: %v", err)
 	}
 	if len(tracks) != 2 {
 		t.Fatalf("expected 2 tracks, got %d", len(tracks))
 	}
-	if !tracks[0].Local {
+	if tracks[0].Local != 1 {
 		t.Error("expected Airbag to remain local after migration")
 	}
 }
 
 func TestPruneUnfollowed(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Create two artists with files, albums, and tracks.
-	for _, f := range []FileRecord{
-		{Path: "a/1.flac", Size: 100, ModTime: now, Artist: "Kept", Album: "A", Title: "T1", IsAlbumArtist: true, ScannedAt: now},
-		{Path: "b/1.flac", Size: 100, ModTime: now, Artist: "Pruned", Album: "B", Title: "T2", IsAlbumArtist: true, ScannedAt: now},
+	for _, f := range []UpsertFileParams{
+		testFileParams("a/1.flac", "Kept", "A", "T1"),
+		testFileParams("b/1.flac", "Pruned", "B", "T2"),
 	} {
-		if err := db.UpsertFile(f); err != nil {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
@@ -1717,28 +1625,25 @@ func TestPruneUnfollowed(t *testing.T) {
 	keptID := ensureArtist(t, db, "Kept")
 	prunedID := ensureArtist(t, db, "Pruned")
 
-	kaID := upsertAlbum(t, db, keptID, AlbumRecord{Title: "A", MBID: "aaa"})
-	upsertTrack(t, db, kaID, TrackRecord{Title: "T1", Position: 1})
+	kaID := testUpsertAlbum(t, db, keptID, UpsertAlbumParams{Title: "A", Mbid: "aaa"})
+	testUpsertTrack(t, db, kaID, UpsertTrackParams{Title: "T1", Position: 1})
 
-	paID := upsertAlbum(t, db, prunedID, AlbumRecord{Title: "B", MBID: "bbb"})
-	upsertTrack(t, db, paID, TrackRecord{Title: "T2", Position: 1})
-	upsertTrack(t, db, paID, TrackRecord{Title: "T3", Position: 2})
+	paID := testUpsertAlbum(t, db, prunedID, UpsertAlbumParams{Title: "B", Mbid: "bbb"})
+	testUpsertTrack(t, db, paID, UpsertTrackParams{Title: "T2", Position: 1})
+	testUpsertTrack(t, db, paID, UpsertTrackParams{Title: "T3", Position: 2})
 
-	// Unfollow "Pruned".
 	if err := db.SetFollowed("Pruned", false); err != nil {
 		t.Fatalf("SetFollowed: %v", err)
 	}
 
-	// Verify unfollowed names.
-	names, err := db.UnfollowedArtistNames()
+	names, err := db.Q.ListUnfollowedArtistNames(bg)
 	if err != nil {
-		t.Fatalf("UnfollowedArtistNames: %v", err)
+		t.Fatalf("ListUnfollowedArtistNames: %v", err)
 	}
 	if len(names) != 1 || names[0] != "Pruned" {
 		t.Fatalf("expected [Pruned], got %v", names)
 	}
 
-	// Prune.
 	result, err := db.PruneUnfollowed()
 	if err != nil {
 		t.Fatalf("PruneUnfollowed: %v", err)
@@ -1753,26 +1658,20 @@ func TestPruneUnfollowed(t *testing.T) {
 		t.Errorf("expected 2 tracks pruned, got %d", result.Tracks)
 	}
 
-	// Kept artist should still exist.
-	albums, err := db.Albums("Kept")
+	keptAlbums, err := db.Q.ListAlbumsByArtist(bg, Normalize("Kept"))
 	if err != nil {
-		t.Fatalf("Albums: %v", err)
+		t.Fatalf("ListAlbumsByArtist: %v", err)
 	}
-	if len(albums) != 1 {
-		t.Fatalf("expected 1 album for Kept, got %d", len(albums))
+	if len(keptAlbums) != 1 {
+		t.Fatalf("expected 1 album for Kept, got %d", len(keptAlbums))
 	}
 
-	// Pruned artist should be gone.
-	artist, err := db.Artist("Pruned")
-	if err != nil {
-		t.Fatalf("Artist: %v", err)
-	}
-	if artist != nil {
-		t.Fatal("expected Pruned artist to be deleted")
+	_, err = db.Q.GetArtistByNameNorm(bg, Normalize("Pruned"))
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows for Pruned artist, got %v", err)
 	}
 
-	// Files should be unaffected.
-	meta, err := db.AllFileMeta()
+	meta, err := db.Q.AllFileMeta(bg)
 	if err != nil {
 		t.Fatalf("AllFileMeta: %v", err)
 	}
@@ -1783,53 +1682,44 @@ func TestPruneUnfollowed(t *testing.T) {
 
 func TestMarkReviewed(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now().Truncate(time.Second)
 
-	// Seed a local file so Radiohead appears in ArtistSummaries.
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now,
-		Artist: "Radiohead", Album: "OK Computer", Title: "Airbag", IsAlbumArtist: true, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag")
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Set up catalog: local tracks on 1997 album, newer album in 2016.
 	rhID := ensureArtist(t, db, "Radiohead")
-	okID := upsertAlbum(t, db, rhID, AlbumRecord{Title: "OK Computer", MBID: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
-	upsertAlbum(t, db, rhID, AlbumRecord{Title: "A Moon Shaped Pool", MBID: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
-	upsertTrack(t, db, okID, TrackRecord{Title: "Airbag", Position: 1, Local: true})
+	okID := testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album"})
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album"})
+	testUpsertTrack(t, db, okID, UpsertTrackParams{Title: "Airbag", Position: 1, Local: 1})
 
-	// Before review: HasNew should be true (2016 > 1997).
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
-	if !summaries[0].HasNew {
-		t.Fatal("expected HasNew=true before MarkReviewed")
+	if summaries[0].HasNew != 1 {
+		t.Fatal("expected HasNew=1 before MarkReviewed")
 	}
 
-	// Mark as reviewed (sets reviewed_at to 2016-05-08).
 	if err := db.MarkReviewed("Radiohead"); err != nil {
 		t.Fatalf("MarkReviewed: %v", err)
 	}
 
-	// After review: HasNew should be false.
-	summaries, err = db.ArtistSummaries()
+	summaries, err = db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
-	if summaries[0].HasNew {
-		t.Fatal("expected HasNew=false after MarkReviewed")
+	if summaries[0].HasNew != 0 {
+		t.Fatal("expected HasNew=0 after MarkReviewed")
 	}
 
-	// Add a newer album — HasNew should become true again.
-	upsertAlbum(t, db, rhID, AlbumRecord{Title: "New Album", MBID: "ccc", ReleaseDate: "2025-01-01", PrimaryType: "Album"})
-	summaries, err = db.ArtistSummaries()
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{Title: "New Album", Mbid: "ccc", ReleaseDate: "2025-01-01", PrimaryType: "Album"})
+	summaries, err = db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
-	if !summaries[0].HasNew {
-		t.Fatal("expected HasNew=true after adding album newer than reviewed_at")
+	if summaries[0].HasNew != 1 {
+		t.Fatal("expected HasNew=1 after adding album newer than reviewed_at")
 	}
 }
 
@@ -1837,41 +1727,32 @@ func TestArtistSummaries_LocalAlbumCountConsistentWithTracks(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now().Truncate(time.Second)
 
-	// Local file is on a compilation album ("Festivus") not in the catalog.
-	if err := db.UpsertFile(FileRecord{
-		Path: "a/1.flac", Size: 100, ModTime: now,
-		Artist: "Alphabet Backwards", Album: "Festivus", Title: "Dearest Santa",
-		TrackNumber: 6, IsAlbumArtist: true, ScannedAt: now,
-	}); err != nil {
+	p := testFileParams("a/1.flac", "Alphabet Backwards", "Festivus", "Dearest Santa", func(f *UpsertFileParams) { f.TrackNumber = 6 })
+	if err := db.Q.UpsertFile(bg, p); err != nil {
 		t.Fatalf("UpsertFile: %v", err)
 	}
 
-	// Catalog has two albums, neither matching the local file's album.
 	artistID := ensureArtist(t, db, "Alphabet Backwards")
-	if err := db.UpsertArtist(ArtistRecord{
-		Name: "Alphabet Backwards", MBID: "mbid-ab", LastCheckedAt: now,
-	}); err != nil {
-		t.Fatalf("UpsertArtist: %v", err)
-	}
+	testUpsertArtist(t, db, "Alphabet Backwards", "mbid-ab", now)
 
-	a1ID := upsertAlbum(t, db, artistID, AlbumRecord{
-		Title: "Little Victories", MBID: "aaa", ReleaseDate: "2012-10-01", PrimaryType: "Album",
+	a1ID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
+		Title: "Little Victories", Mbid: "aaa", ReleaseDate: "2012-10-01", PrimaryType: "Album",
 	})
-	a2ID := upsertAlbum(t, db, artistID, AlbumRecord{
-		Title: "Friends, Lovers & Empty Beds", MBID: "bbb", ReleaseDate: "2018", PrimaryType: "Album",
+	a2ID := testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
+		Title: "Friends, Lovers & Empty Beds", Mbid: "bbb", ReleaseDate: "2018", PrimaryType: "Album",
 	})
 	for i := range 12 {
-		upsertTrack(t, db, a1ID, TrackRecord{Title: fmt.Sprintf("Track %d", i+1), Position: i + 1})
+		testUpsertTrack(t, db, a1ID, UpsertTrackParams{Title: fmt.Sprintf("Track %d", i+1), Position: int64(i + 1)})
 	}
 	for i := range 11 {
-		upsertTrack(t, db, a2ID, TrackRecord{Title: fmt.Sprintf("Track %d", i+13), Position: i + 1})
+		testUpsertTrack(t, db, a2ID, UpsertTrackParams{Title: fmt.Sprintf("Track %d", i+13), Position: int64(i + 1)})
 	}
 
 	if err := db.MarkLocalTracks("Alphabet Backwards"); err != nil {
 		t.Fatalf("MarkLocalTracks: %v", err)
 	}
 
-	summaries, err := db.ArtistSummaries()
+	summaries, err := db.Q.ArtistSummaries(bg)
 	if err != nil {
 		t.Fatalf("ArtistSummaries: %v", err)
 	}
@@ -1880,12 +1761,18 @@ func TestArtistSummaries_LocalAlbumCountConsistentWithTracks(t *testing.T) {
 	}
 
 	s := summaries[0]
-	// Bug: TrackCount was 0 (from tracks.local) even though the artist has a local file.
-	// File-based counts should be the floor — the artist has 1 file on 1 album.
-	if s.TrackCount < 1 {
-		t.Fatalf("expected at least 1 local track (from files), got %d", s.TrackCount)
+	effectiveTrackCount := s.TrackCnt
+	if s.Mbid != "" && s.LocalTracks > effectiveTrackCount {
+		effectiveTrackCount = s.LocalTracks
 	}
-	if s.AlbumCount < 1 {
-		t.Fatalf("expected at least 1 local album (from files), got %d", s.AlbumCount)
+	if effectiveTrackCount < 1 {
+		t.Fatalf("expected at least 1 local track (from files), got %d", effectiveTrackCount)
+	}
+	effectiveAlbumCount := s.AlbumCnt
+	if s.Mbid != "" && s.LocalAlbums > effectiveAlbumCount {
+		effectiveAlbumCount = s.LocalAlbums
+	}
+	if effectiveAlbumCount < 1 {
+		t.Fatalf("expected at least 1 local album (from files), got %d", effectiveAlbumCount)
 	}
 }

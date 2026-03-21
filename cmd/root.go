@@ -7,7 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/spf13/cobra"
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 	"github.com/toba/musup/internal/tui"
 )
 
@@ -34,13 +34,13 @@ var rootCmd = &cobra.Command{
 			dp = filepath.Join(root, ".musup.db")
 		}
 
-		db, err := state.Open(dp)
+		d, err := db.Open(dp)
 		if err != nil {
 			return fmt.Errorf("open db: %w", err)
 		}
-		defer func() { _ = db.Close() }()
+		defer func() { _ = d.Close() }()
 
-		p := tea.NewProgram(tui.New(db, root, ver))
+		p := tea.NewProgram(tui.New(d, root, ver))
 		if _, err := p.Run(); err != nil {
 			return err
 		}

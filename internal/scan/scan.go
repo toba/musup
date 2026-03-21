@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/dhowden/tag"
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -32,8 +32,8 @@ type changedFile struct {
 	modTime time.Time
 }
 
-// Scan walks root for music files, reads metadata, and updates db.
-func Scan(ctx context.Context, db *state.DB, root string) error {
+// Scan walks root for music files, reads metadata, and updates d.
+func Scan(ctx context.Context, d *db.DB, root string) error {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return fmt.Errorf("resolve root: %w", err)
@@ -41,9 +41,13 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 
 	// Load all known file metadata up front for in-memory change detection
 	// instead of issuing one SQLite query per file during the walk.
-	knownFiles, err := db.AllFileMeta()
+	metaRows, err := d.Q.AllFileMeta(context.Background())
 	if err != nil {
 		return fmt.Errorf("load file metadata: %w", err)
+	}
+	knownFiles := make(map[string]db.AllFileMetaRow, len(metaRows))
+	for _, row := range metaRows {
+		knownFiles[row.Path] = row
 	}
 
 	livePaths := make(map[string]struct{})
@@ -128,22 +132,25 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 	}
 
 	for _, r := range results {
-		if err := db.UpsertFile(state.FileRecord{
+		if err := d.Q.UpsertFile(context.Background(), db.UpsertFileParams{
 			Path:          r.cf.relPath,
 			Size:          r.cf.size,
-			ModTime:       r.cf.modTime,
+			ModTime:       r.cf.modTime.Format(time.RFC3339),
 			Artist:        r.artist,
 			Album:         r.album,
 			Title:         r.title,
-			TrackNumber:   r.trackNo,
-			IsAlbumArtist: r.isAlbumArtist,
-			ScannedAt:     time.Now(),
+			TitleNorm:     db.Normalize(r.title),
+			AlbumNorm:     db.Normalize(r.album),
+			ArtistNorm:    db.Normalize(r.artist),
+			TrackNumber:   int64(r.trackNo),
+			IsAlbumArtist: int64(db.BoolToInt(r.isAlbumArtist)),
+			ScannedAt:     time.Now().Format(time.RFC3339),
 		}); err != nil {
 			return err
 		}
 	}
 
-	_, err = db.RemoveStaleFiles(livePaths)
+	_, err = d.RemoveStaleFiles(livePaths)
 	if err != nil {
 		return fmt.Errorf("remove stale files: %w", err)
 	}

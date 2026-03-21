@@ -2,7 +2,7 @@
 // versions:
 //   sqlc v1.30.0
 
-package model
+package db
 
 type Album struct {
 	ID             int64

@@ -4,14 +4,17 @@ import (
 	"fmt"
 	"strings"
 
+	"context"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/integration/musicbrainz"
-	"github.com/toba/musup/internal/state"
+
+	"github.com/toba/musup/internal/db"
 )
 
 type detailModel struct {
-	db     *state.DB
+	db     *db.DB
 	mb     *musicbrainz.Client
 	artist string
 	albums []string // local-only albums (before catalog fetch)
@@ -20,20 +23,20 @@ type detailModel struct {
 	offset int
 	err    error
 
-	catalogAlbums []state.AlbumRecord
+	catalogAlbums []db.ListAlbumsByArtistRow
 	fetchErr      error
 }
 
-func newDetailModel(db *state.DB, mb *musicbrainz.Client, artist string) detailModel {
-	m := detailModel{db: db, mb: mb, artist: artist}
+func newDetailModel(d *db.DB, mb *musicbrainz.Client, artist string) detailModel {
+	m := detailModel{db: d, mb: mb, artist: artist}
 
 	// Check if we already have catalog albums stored
-	catalog, err := db.Albums(artist)
+	catalog, err := d.Q.ListAlbumsByArtist(context.Background(), db.Normalize(artist))
 	if err == nil && len(catalog) > 0 {
 		m.catalogAlbums = catalog
 	} else {
 		// Fall back to local albums
-		albums, err := db.LocalAlbums(artist)
+		albums, err := d.Q.LocalAlbums(context.Background(), db.Normalize(artist))
 		m.albums = albums
 		m.err = err
 	}

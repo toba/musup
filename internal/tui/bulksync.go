@@ -8,8 +8,8 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/toba/musup/internal/db"
 	"github.com/toba/musup/internal/integration/musicbrainz"
-	"github.com/toba/musup/internal/state"
 )
 
 type startBulkSyncMsg struct {
@@ -24,7 +24,7 @@ type bulkResult struct {
 
 type bulkSyncModel struct {
 	spinner   spinner.Model
-	db        *state.DB
+	db        *db.DB
 	mb        *musicbrainz.Client
 	artists   []string
 	index     int
@@ -39,10 +39,10 @@ type bulkSyncModel struct {
 	cancelled bool
 }
 
-func newBulkSyncModel(db *state.DB, mb *musicbrainz.Client, artists []string) bulkSyncModel {
+func newBulkSyncModel(d *db.DB, mb *musicbrainz.Client, artists []string) bulkSyncModel {
 	m := bulkSyncModel{
 		spinner: newSpinner(),
-		db:      db,
+		db:      d,
 		mb:      mb,
 		artists: artists,
 	}

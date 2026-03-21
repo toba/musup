@@ -5,11 +5,11 @@ status: review
 type: task
 priority: normal
 created_at: 2026-03-21T16:12:50Z
-updated_at: 2026-03-21T16:23:22Z
+updated_at: 2026-03-21T17:03:52Z
 sync:
     github:
         issue_number: "56"
-        synced_at: "2026-03-21T16:38:30Z"
+        synced_at: "2026-03-21T17:05:47Z"
 ---
 
 Replace hand-written SQL in `internal/state/db.go` (1,293 lines, ~33 methods) with sqlc-generated type-safe Go code, following the pattern established in pacer/core.
@@ -41,3 +41,18 @@ Replace hand-written SQL in `internal/state/db.go` (1,293 lines, ~33 methods) wi
 - Refactored `db.go` to delegate to `model.Queries` instead of hand-written SQL
 - Kept migrations, `RemoveStaleFiles`, and `Vacuum` as hand-written (dynamic DDL / Go logic)
 - All 45 existing tests pass, 0 lint issues
+
+
+
+## Phase 2: Flatten & expose sqlc types directly
+
+- [x] Rename `internal/state/` → `internal/db/`
+- [x] Flatten `model/` sub-package — sqlc generates directly into `internal/db/`
+- [x] Eliminate wrapper types (FileRecord, AlbumRecord, TrackRecord, ArtistRecord, ArtistSummary, FileMeta)
+- [x] Eliminate wrapper methods — callers use `d.Q.*` for simple queries
+- [x] Keep composite methods on DB (EnsureArtist, UpsertAlbum, PruneUnfollowed, etc.)
+- [x] Add NormalizeFileParams/NormalizeAlbumParams/NormalizeTrackParams convenience functions
+- [x] Update all callers (cmd/, scan/, tui/) to import `internal/db`
+- [x] Update all tests
+- [x] Remove old `internal/state/` package
+- [x] All tests pass, 0 lint issues

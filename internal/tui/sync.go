@@ -6,17 +6,20 @@ import (
 	"fmt"
 	"strings"
 
+	"time"
+
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/toba/musup/internal/db"
 	"github.com/toba/musup/internal/integration/musicbrainz"
-	"github.com/toba/musup/internal/state"
 )
 
 type syncModel struct {
 	spinner spinner.Model
 	artist  string
 	mb      *musicbrainz.Client
-	db      *state.DB
+	db      *db.DB
 	ch      <-chan tea.Msg
 
 	// Progress state
@@ -28,7 +31,7 @@ type syncModel struct {
 
 	// Result
 	done   bool
-	albums []state.AlbumRecord
+	albums []db.ListAlbumsByArtistRow
 	err    error
 }
 
@@ -40,7 +43,7 @@ type syncProgressMsg struct {
 }
 
 type syncDoneMsg struct {
-	albums []state.AlbumRecord
+	albums []db.ListAlbumsByArtistRow
 	err    error
 }
 
@@ -48,23 +51,23 @@ type startSyncMsg struct {
 	artist string
 }
 
-func newSyncModel(db *state.DB, mb *musicbrainz.Client, artist string) syncModel {
-	return newSyncModelWithContext(context.Background(), db, mb, artist)
+func newSyncModel(d *db.DB, mb *musicbrainz.Client, artist string) syncModel {
+	return newSyncModelWithContext(context.Background(), d, mb, artist)
 }
 
-func newSyncModelWithContext(ctx context.Context, db *state.DB, mb *musicbrainz.Client, artist string) syncModel {
+func newSyncModelWithContext(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artist string) syncModel {
 	ch := make(chan tea.Msg, 1)
 
 	m := syncModel{
 		spinner: newSpinner(),
 		artist:  artist,
 		mb:      mb,
-		db:      db,
+		db:      d,
 		ch:      ch,
 		phase:   "Connecting to MusicBrainz...",
 	}
 
-	go runSync(ctx, ch, mb, db, artist)
+	go runSync(ctx, ch, mb, d, artist)
 
 	return m
 }
@@ -144,7 +147,7 @@ func hasComposerTag(artist musicbrainz.Artist) bool {
 	return false
 }
 
-func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db *state.DB, artist string) {
+func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, d *db.DB, artist string) {
 	defer close(ch)
 
 	// Step 1: Search for artist
@@ -161,7 +164,7 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	}
 
 	if len(result.Artists) == 0 || result.Artists[0].Score < mbMinMatchScore {
-		_ = db.MarkArtistNotFound(artist)
+		_ = d.MarkArtistNotFound(artist)
 		ch <- syncDoneMsg{err: errors.New("artist not found on MusicBrainz")}
 		return
 	}
@@ -169,7 +172,7 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	mbArtist := result.Artists[0]
 
 	// Resolve artist → ID
-	artistID, err := db.EnsureArtist(artist)
+	artistID, err := d.EnsureArtist(artist)
 	if err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("ensure artist: %w", err)}
 		return
@@ -208,19 +211,25 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 
 	// Build set of albums we already have tracks for so we can skip
 	// fetching them from MusicBrainz again.
-	knownMBIDs, err := db.KnownAlbumMBIDs(artist)
+	knownList, err := d.Q.ListKnownAlbumMBIDs(ctx, db.Normalize(artist))
 	if err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("known albums: %w", err)}
 		return
+	}
+	knownMBIDs := make(map[string]struct{}, len(knownList))
+	for _, mbid := range knownList {
+		knownMBIDs[mbid] = struct{}{}
 	}
 
 	// Step 3: For each release group, upsert album and fetch tracks
 	fetched := 0
 	for _, rg := range rgs {
 		// Always upsert the album metadata (cheap, keeps it fresh).
-		albumID, err := db.UpsertAlbum(artistID, state.AlbumRecord{
+		albumID, err := d.UpsertAlbum(artistID, db.UpsertAlbumParams{
+			ArtistID:       artistID,
 			Title:          rg.Title,
-			MBID:           rg.ID,
+			TitleNorm:      db.Normalize(rg.Title),
+			Mbid:           rg.ID,
 			ReleaseDate:    rg.FirstReleaseDate,
 			PrimaryType:    rg.PrimaryType,
 			SecondaryTypes: strings.Join(rg.SecondaryTypes, ","),
@@ -262,11 +271,14 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 			rel := relResult.Releases[0]
 			for _, medium := range rel.Media {
 				for _, track := range medium.Tracks {
-					if err := db.UpsertTrack(albumID, state.TrackRecord{
-						Title:    track.Recording.Title,
-						Position: track.Position,
-						MBID:     track.Recording.ID,
-						LengthMS: track.Recording.Length,
+					if err := d.Q.UpsertTrack(ctx, db.UpsertTrackParams{
+						AlbumID:   albumID,
+						Title:     track.Recording.Title,
+						TitleNorm: db.Normalize(track.Recording.Title),
+						Position:  int64(track.Position),
+						Mbid:      track.Recording.ID,
+						LengthMs:  int64(track.Recording.Length),
+						Local:     0,
 					}); err != nil {
 						ch <- syncDoneMsg{err: fmt.Errorf("upsert track: %w", err)}
 						return
@@ -279,19 +291,19 @@ func runSync(ctx context.Context, ch chan<- tea.Msg, mb *musicbrainz.Client, db 
 	// Step 4: Match local tracks
 	ch <- syncProgressMsg{phase: "Matching local library..."}
 
-	if err := db.MarkLocalTracks(artist); err != nil {
+	if err := d.MarkLocalTracks(artist); err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("mark local tracks: %w", err)}
 		return
 	}
 
 	// Update artist record
-	if err := db.UpdateArtistMeta(artistID, mbArtist.ID); err != nil {
+	if err := d.Q.UpdateArtistMeta(ctx, mbArtist.ID, time.Now().Format(time.RFC3339), artistID); err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("update artist: %w", err)}
 		return
 	}
 
 	// Read back the full catalog
-	albums, err := db.Albums(artist)
+	albums, err := d.Q.ListAlbumsByArtist(ctx, db.Normalize(artist))
 	if err != nil {
 		ch <- syncDoneMsg{err: fmt.Errorf("read catalog: %w", err)}
 		return

@@ -38,7 +38,7 @@
 - Speed up startup; in-memory file change detection
 - Migrate TUI dependencies to v2 (`bubbletea`, `lipgloss`, `bubbles`)
 - Extract shared TUI helpers; simplify scan mutex pattern; add `boolToInt`; deduplicate `bgView`
-- Implement `sqlc` for type-safe database queries
+- Implement `sqlc` for type-safe database queries; flatten `internal/state/model` into `internal/db` ([#56](https://github.com/toba/musup/issues/56))
 
 ## Week of Mar 8 – Mar 14, 2026
 

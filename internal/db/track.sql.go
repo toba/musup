@@ -3,7 +3,7 @@
 //   sqlc v1.30.0
 // source: track.sql
 
-package model
+package db
 
 import (
 	"context"

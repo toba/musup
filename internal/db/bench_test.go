@@ -53,13 +53,13 @@ func BenchmarkArtistSummaries(b *testing.B) {
 	db := openLargeDB(b)
 
 	// Warm up (first call may trigger migration).
-	if _, err := db.ArtistSummaries(); err != nil {
+	if _, err := db.Q.ArtistSummaries(bg); err != nil {
 		b.Fatalf("ArtistSummaries: %v", err)
 	}
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := db.ArtistSummaries(); err != nil {
+		if _, err := db.Q.ArtistSummaries(bg); err != nil {
 			b.Fatalf("ArtistSummaries: %v", err)
 		}
 	}
@@ -70,7 +70,7 @@ func BenchmarkAllFileMeta(b *testing.B) {
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := db.AllFileMeta(); err != nil {
+		if _, err := db.Q.AllFileMeta(bg); err != nil {
 			b.Fatalf("AllFileMeta: %v", err)
 		}
 	}

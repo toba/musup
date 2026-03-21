@@ -6,12 +6,15 @@ import (
 	"strconv"
 	"strings"
 
+	"context"
+
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
-	"github.com/toba/musup/internal/state"
+
+	"github.com/toba/musup/internal/db"
 )
 
 type artistItem struct {
@@ -148,7 +151,7 @@ func computeColumnWidths(items []artistItem) (trackNumWidth, albumNumWidth int) 
 
 type listModel struct {
 	list     list.Model
-	db       *state.DB
+	db       *db.DB
 	allItems []artistItem
 	colW     *colWidths
 	sync     *syncState
@@ -156,7 +159,7 @@ type listModel struct {
 	showNew  bool // filter to artists with newer catalog albums
 }
 
-func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height int) listModel {
+func newListModel(d *db.DB, summaries []db.ArtistSummariesRow, width, height int) listModel {
 	items := summariesToItems(summaries)
 	sortArtists(items, sortByName)
 
@@ -182,7 +185,7 @@ func newListModel(db *state.DB, summaries []state.ArtistSummary, width, height i
 
 	return listModel{
 		list:     l,
-		db:       db,
+		db:       d,
 		allItems: items,
 		colW:     cw,
 		sync:     ss,
@@ -291,13 +294,13 @@ func (m *listModel) stopSyncing(artist string) {
 }
 
 type refreshMsg struct {
-	summaries []state.ArtistSummary
+	summaries []db.ArtistSummariesRow
 }
 
 // refreshCmd returns a tea.Cmd that fetches summaries asynchronously.
 func (m *listModel) refreshCmd() tea.Cmd {
 	return func() tea.Msg {
-		summaries, err := m.db.ArtistSummaries()
+		summaries, err := m.db.Q.ArtistSummaries(context.Background())
 		if err != nil {
 			return refreshMsg{}
 		}
@@ -306,7 +309,7 @@ func (m *listModel) refreshCmd() tea.Cmd {
 }
 
 // refreshFrom updates the list with the given summaries (no DB call).
-func (m *listModel) refreshFrom(summaries []state.ArtistSummary) {
+func (m *listModel) refreshFrom(summaries []db.ArtistSummariesRow) {
 	m.allItems = summariesToItems(summaries)
 	m.colW.trackNum, m.colW.albumNum = computeColumnWidths(m.allItems)
 	m.applySort()
@@ -355,7 +358,7 @@ type startPruneMsg struct {
 
 func (m *listModel) startPruneCmd() tea.Cmd {
 	return func() tea.Msg {
-		names, err := m.db.UnfollowedArtistNames()
+		names, err := m.db.Q.ListUnfollowedArtistNames(context.Background())
 		if err != nil || len(names) == 0 {
 			return nil
 		}

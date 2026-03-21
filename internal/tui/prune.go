@@ -6,28 +6,28 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 )
 
 type pruneModel struct {
-	db        *state.DB
+	db        *db.DB
 	spinner   spinner.Model
 	artists   []string // unfollowed artist names
 	confirmed bool
 	running   bool
 	done      bool
-	result    state.PruneResult
+	result    db.PruneResult
 	err       error
 }
 
 type pruneDoneMsg struct {
-	result state.PruneResult
+	result db.PruneResult
 	err    error
 }
 
-func newPruneModel(db *state.DB, artists []string) pruneModel {
+func newPruneModel(d *db.DB, artists []string) pruneModel {
 	return pruneModel{
-		db:      db,
+		db:      d,
 		spinner: newSpinner(),
 		artists: artists,
 	}

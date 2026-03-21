@@ -4,24 +4,26 @@ import (
 	"fmt"
 	"strings"
 
+	"context"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 )
 
 type albumDetailModel struct {
 	artist     string
 	albumTitle string
 	year       string
-	tracks     []state.TrackRecord
+	tracks     []db.ListTracksByAlbumRow
 	cursor     int
 	height     int
 	offset     int
 	err        error
 }
 
-func newAlbumDetailModel(db *state.DB, artist, albumTitle, year string) albumDetailModel {
-	tracks, err := db.Tracks(artist, albumTitle)
+func newAlbumDetailModel(d *db.DB, artist, albumTitle, year string) albumDetailModel {
+	tracks, err := d.Q.ListTracksByAlbum(context.Background(), db.Normalize(artist), albumTitle)
 	return albumDetailModel{
 		artist:     artist,
 		albumTitle: albumTitle,
@@ -106,7 +108,7 @@ func (m albumDetailModel) View() string {
 		titleWidth := runewidth.StringWidth(t.Title)
 		name := t.Title + strings.Repeat(" ", max(0, maxNameWidth-titleWidth))
 		owned := " "
-		if t.Local {
+		if t.Local != 0 {
 			owned = localStyle.Render("✓")
 		}
 

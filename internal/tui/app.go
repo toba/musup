@@ -7,9 +7,9 @@ import (
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/toba/musup/internal/db"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/scan"
-	"github.com/toba/musup/internal/state"
 )
 
 type viewState int
@@ -27,7 +27,7 @@ const (
 )
 
 type Model struct {
-	db     *state.DB
+	db     *db.DB
 	mb     *musicbrainz.Client
 	root   string
 	state  viewState
@@ -48,10 +48,10 @@ type Model struct {
 	prevHelpState viewState // view behind the help modal
 }
 
-func New(db *state.DB, root, version string) Model {
+func New(d *db.DB, root, version string) Model {
 	mb := musicbrainz.New("musup", version, "https://github.com/toba/musup")
 	return Model{
-		db:         db,
+		db:         d,
 		mb:         mb,
 		root:       root,
 		state:      viewScanning,
@@ -64,12 +64,12 @@ func (m Model) Init() tea.Cmd {
 }
 
 type cachedMsg struct {
-	summaries []state.ArtistSummary
+	summaries []db.ArtistSummariesRow
 }
 
 func (m Model) loadCached() tea.Cmd {
 	return func() tea.Msg {
-		summaries, err := m.db.ArtistSummaries()
+		summaries, err := m.db.Q.ArtistSummaries(context.Background())
 		if err != nil || len(summaries) == 0 {
 			return cachedMsg{}
 		}
@@ -83,13 +83,13 @@ func (m Model) startScan() tea.Cmd {
 		if err != nil {
 			return scanDoneMsg{err: err}
 		}
-		summaries, err := m.db.ArtistSummaries()
+		summaries, err := m.db.Q.ArtistSummaries(context.Background())
 		return scanDoneMsg{summaries: summaries, err: err}
 	}
 }
 
 type scanDoneMsg struct {
-	summaries []state.ArtistSummary
+	summaries []db.ArtistSummariesRow
 	err       error
 }
 

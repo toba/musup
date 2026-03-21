@@ -6,24 +6,24 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/toba/musup/internal/state"
+	"github.com/toba/musup/internal/db"
 )
 
 func TestScan_EmptyDir(t *testing.T) {
 	root := t.TempDir()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
 
-	db, err := state.Open(dbPath)
+	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer d.Close()
 
-	if err := Scan(context.Background(), db, root); err != nil {
+	if err := Scan(context.Background(), d, root); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	artists, err := db.UniqueArtists()
+	artists, err := d.Q.UniqueArtists(context.Background())
 	if err != nil {
 		t.Fatalf("UniqueArtists: %v", err)
 	}
@@ -40,17 +40,17 @@ func TestScan_SkipsUnsupportedExtensions(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	db, err := state.Open(dbPath)
+	d, err := db.Open(dbPath)
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	defer db.Close()
+	defer d.Close()
 
-	if err := Scan(context.Background(), db, root); err != nil {
+	if err := Scan(context.Background(), d, root); err != nil {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	artists, err := db.UniqueArtists()
+	artists, err := d.Q.UniqueArtists(context.Background())
 	if err != nil {
 		t.Fatalf("UniqueArtists: %v", err)
 	}

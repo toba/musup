@@ -3,7 +3,7 @@
 //   sqlc v1.30.0
 // source: artist.sql
 
-package model
+package db
 
 import (
 	"context"

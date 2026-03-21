@@ -5,69 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-// FileRecord represents a scanned music file.
-type FileRecord struct {
-	Path          string
-	Size          int64
-	ModTime       time.Time
-	Artist        string
-	Album         string
-	Title         string
-	TrackNumber   int
-	IsAlbumArtist bool
-	ScannedAt     time.Time
-}
-
-// AlbumRecord represents an album in the catalog (from MusicBrainz or local).
-type AlbumRecord struct {
-	ID             int64
-	ArtistID       int64
-	ArtistName     string
-	Title          string
-	MBID           string
-	ReleaseDate    string
-	PrimaryType    string
-	SecondaryTypes string // comma-separated, e.g. "Compilation,Live"
-	LocalTracks    int
-	TotalTracks    int
-}
-
-// TrackRecord represents a track in an album.
-type TrackRecord struct {
-	ID         int64
-	AlbumID    int64
-	ArtistName string
-	AlbumTitle string
-	Title      string
-	Position   int
-	MBID       string
-	LengthMS   int
-	Local      bool
-}
-
-// ArtistRecord represents a tracked artist.
-type ArtistRecord struct {
-	ID            int64
-	Name          string
-	MBID          string
-	LastCheckedAt time.Time
-	LatestRelease string
-	LatestDate    string
-	NotFound      bool
-}
-
 // DB wraps a SQLite database for musup state.
 type DB struct {
 	db *sql.DB
-	q  *Queries
+	Q  *Queries
 }
 
-func boolToInt(b bool) int {
+// BoolToInt converts a bool to an int (1 or 0).
+func BoolToInt(b bool) int {
 	if b {
 		return 1
 	}
@@ -93,7 +42,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("set pragmas: %w", err)
 	}
 
-	d := &DB{db: sqlDB, q: New(sqlDB)}
+	d := &DB{db: sqlDB, Q: New(sqlDB)}
 	if err := d.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -669,182 +618,44 @@ func (d *DB) backfillArtistNorm() error {
 	return tx.Commit()
 }
 
-// UpsertFile inserts or updates a file record.
-func (d *DB) UpsertFile(f FileRecord) error {
-	return d.q.UpsertFile(bg, UpsertFileParams{
-		Path:          f.Path,
-		Size:          f.Size,
-		ModTime:       f.ModTime.Format(time.RFC3339),
-		Artist:        f.Artist,
-		Album:         f.Album,
-		Title:         f.Title,
-		TrackNumber:   int64(f.TrackNumber),
-		IsAlbumArtist: int64(boolToInt(f.IsAlbumArtist)),
-		ScannedAt:     f.ScannedAt.Format(time.RFC3339),
-		TitleNorm:     Normalize(f.Title),
-		AlbumNorm:     Normalize(f.Album),
-		ArtistNorm:    Normalize(f.Artist),
-	})
+// NormalizeFileParams fills in the TitleNorm, AlbumNorm, and ArtistNorm fields.
+func NormalizeFileParams(p *UpsertFileParams) {
+	p.TitleNorm = Normalize(p.Title)
+	p.AlbumNorm = Normalize(p.Album)
+	p.ArtistNorm = Normalize(p.Artist)
 }
 
-// FileMeta holds the stored metadata used for change detection.
-type FileMeta struct {
-	Size    int64
-	ModTime string
-	Title   string
+// NormalizeAlbumParams fills in the TitleNorm field.
+func NormalizeAlbumParams(p *UpsertAlbumParams) {
+	p.TitleNorm = Normalize(p.Title)
 }
 
-// AllFileMeta loads all file records into a map keyed by path for fast
-// in-memory change detection.
-func (d *DB) AllFileMeta() (map[string]FileMeta, error) {
-	rows, err := d.q.AllFileMeta(bg)
-	if err != nil {
-		return nil, err
-	}
-	m := make(map[string]FileMeta, len(rows))
-	for _, r := range rows {
-		m[r.Path] = FileMeta{Size: r.Size, ModTime: r.ModTime, Title: r.Title}
-	}
-	return m, nil
-}
-
-// ArtistSummary holds aggregate info for one artist.
-type ArtistSummary struct {
-	Name        string
-	AlbumCount  int    // local albums (from files)
-	NewestAlbum string // kept for sort mode
-	TrackCount  int    // local tracks — from tracks.local when synced, else file count
-	TotalAlbums int    // catalog albums (from albums table, 0 if not synced)
-	TotalTracks int    // catalog tracks (from tracks table, 0 if not synced)
-	Synced      bool   // artist has MBID in artists table
-	Followed    bool   // artist is followed for sync
-	HasNew      bool   // catalog has albums newer than latest local album
-}
-
-// ArtistSummaries returns all artists with album counts and newest album name.
-func (d *DB) ArtistSummaries() ([]ArtistSummary, error) {
-	rows, err := d.q.ArtistSummaries(bg)
-	if err != nil {
-		return nil, err
-	}
-	summaries := make([]ArtistSummary, 0, len(rows))
-	for _, r := range rows {
-		s := ArtistSummary{
-			Name:        r.Name,
-			AlbumCount:  int(r.AlbumCnt),
-			NewestAlbum: r.Newest,
-			TrackCount:  int(r.TrackCnt),
-			TotalAlbums: int(r.TotalAlbums),
-			TotalTracks: int(r.TotalTracks),
-			Synced:      r.Mbid != "",
-			Followed:    r.Followed != 0,
-			HasNew:      r.HasNew != 0,
-		}
-		// For synced artists, prefer catalog-matched local counts when they
-		// are higher (accounts for fuzzy matching), but never go below the
-		// file-based counts — the files table proves those tracks exist.
-		if s.Synced && s.TotalTracks > 0 {
-			s.TrackCount = max(s.TrackCount, int(r.LocalTracks))
-			s.AlbumCount = max(s.AlbumCount, int(r.LocalAlbums))
-		}
-		summaries = append(summaries, s)
-	}
-	return summaries, nil
-}
-
-// UniqueArtists returns distinct artist names from the files table.
-func (d *DB) UniqueArtists() ([]string, error) {
-	return d.q.UniqueArtists(bg)
-}
-
-// LocalAlbums returns distinct album names for a given artist.
-func (d *DB) LocalAlbums(artist string) ([]string, error) {
-	return d.q.LocalAlbums(bg, Normalize(artist))
+// NormalizeTrackParams fills in the TitleNorm field.
+func NormalizeTrackParams(p *UpsertTrackParams) {
+	p.TitleNorm = Normalize(p.Title)
 }
 
 // EnsureArtist finds an artist by normalized name or creates one, returning the ID.
 func (d *DB) EnsureArtist(name string) (int64, error) {
 	norm := Normalize(name)
-	row, err := d.q.GetArtistByNameNorm(bg, norm)
+	row, err := d.Q.GetArtistByNameNorm(bg, norm)
 	if err == nil {
 		return row.ID, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return 0, err
 	}
-	return d.q.InsertArtist(bg, name, norm)
-}
-
-// UpdateArtistMeta updates the MBID and last_checked_at for an artist.
-func (d *DB) UpdateArtistMeta(id int64, mbid string) error {
-	return d.q.UpdateArtistMeta(bg, mbid, time.Now().Format(time.RFC3339), id)
-}
-
-// Artist retrieves an artist record by name. Returns nil if not found.
-func (d *DB) Artist(name string) (*ArtistRecord, error) {
-	row, err := d.q.GetArtistByNameNorm(bg, Normalize(name))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	a := &ArtistRecord{
-		ID:            row.ID,
-		Name:          row.Name,
-		MBID:          row.Mbid,
-		LatestRelease: row.LatestRelease,
-		LatestDate:    row.LatestDate,
-		NotFound:      row.NotFound != 0,
-	}
-	if row.LastCheckedAt != "" {
-		a.LastCheckedAt, _ = time.Parse(time.RFC3339, row.LastCheckedAt)
-	}
-	return a, nil
-}
-
-// MarkArtistNotFound ensures an artist exists and sets not_found = 1.
-func (d *DB) MarkArtistNotFound(name string) error {
-	id, err := d.EnsureArtist(name)
-	if err != nil {
-		return err
-	}
-	return d.q.MarkArtistNotFound(bg, id)
-}
-
-// UpsertArtist inserts or updates an artist record (kept for backward compat with tests).
-func (d *DB) UpsertArtist(a ArtistRecord) error {
-	id, err := d.EnsureArtist(a.Name)
-	if err != nil {
-		return err
-	}
-	return d.q.UpdateArtistFull(bg, UpdateArtistFullParams{
-		Mbid:          a.MBID,
-		LastCheckedAt: a.LastCheckedAt.Format(time.RFC3339),
-		LatestRelease: a.LatestRelease,
-		LatestDate:    a.LatestDate,
-		NotFound:      int64(boolToInt(a.NotFound)),
-		ID:            id,
-	})
+	return d.Q.InsertArtist(bg, name, norm)
 }
 
 // UpsertAlbum inserts or updates an album record. Returns the album ID.
-func (d *DB) UpsertAlbum(artistID int64, a AlbumRecord) (int64, error) {
-	albumID, err := d.q.UpsertAlbum(bg, UpsertAlbumParams{
-		ArtistID:       artistID,
-		Title:          a.Title,
-		TitleNorm:      Normalize(a.Title),
-		Mbid:           a.MBID,
-		ReleaseDate:    a.ReleaseDate,
-		PrimaryType:    a.PrimaryType,
-		SecondaryTypes: a.SecondaryTypes,
-	})
+func (d *DB) UpsertAlbum(artistID int64, p UpsertAlbumParams) (int64, error) {
+	albumID, err := d.Q.UpsertAlbum(bg, p)
 	if err != nil {
 		return 0, err
 	}
-	// LastInsertId returns 0 on UPDATE (no new row). Look up the existing ID.
 	if albumID == 0 {
-		albumID, err = d.q.GetAlbumID(bg, artistID, a.Title)
+		albumID, err = d.Q.GetAlbumID(bg, artistID, p.Title)
 		if err != nil {
 			return 0, err
 		}
@@ -852,116 +663,9 @@ func (d *DB) UpsertAlbum(artistID int64, a AlbumRecord) (int64, error) {
 	return albumID, nil
 }
 
-// Albums returns all albums for an artist with computed track counts,
-// ordered by release_date ASC then title ASC.
-func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
-	rows, err := d.q.ListAlbumsByArtist(bg, Normalize(artistName))
-	if err != nil {
-		return nil, err
-	}
-	albums := make([]AlbumRecord, 0, len(rows))
-	for _, r := range rows {
-		albums = append(albums, AlbumRecord{
-			ArtistName:     r.Name,
-			Title:          r.Title,
-			MBID:           r.Mbid,
-			ReleaseDate:    r.ReleaseDate,
-			PrimaryType:    r.PrimaryType,
-			SecondaryTypes: r.SecondaryTypes,
-			TotalTracks:    int(r.TotalTracks),
-			LocalTracks:    int(r.LocalTracks),
-		})
-	}
-	return albums, nil
-}
-
-// UpsertTrack inserts or updates a track record.
-func (d *DB) UpsertTrack(albumID int64, t TrackRecord) error {
-	return d.q.UpsertTrack(bg, UpsertTrackParams{
-		AlbumID:   albumID,
-		Title:     t.Title,
-		TitleNorm: Normalize(t.Title),
-		Position:  int64(t.Position),
-		Mbid:      t.MBID,
-		LengthMs:  int64(t.LengthMS),
-		Local:     int64(boolToInt(t.Local)),
-	})
-}
-
-// KnownAlbumMBIDs returns the set of album MBIDs for an artist that already
-// have tracks in the database.
-func (d *DB) KnownAlbumMBIDs(artistName string) (map[string]struct{}, error) {
-	mbids, err := d.q.ListKnownAlbumMBIDs(bg, Normalize(artistName))
-	if err != nil {
-		return nil, err
-	}
-	known := make(map[string]struct{}, len(mbids))
-	for _, mbid := range mbids {
-		known[mbid] = struct{}{}
-	}
-	return known, nil
-}
-
-// Tracks returns all tracks for an album, ordered by position.
-func (d *DB) Tracks(artistName, albumTitle string) ([]TrackRecord, error) {
-	rows, err := d.q.ListTracksByAlbum(bg, Normalize(artistName), albumTitle)
-	if err != nil {
-		return nil, err
-	}
-	tracks := make([]TrackRecord, 0, len(rows))
-	for _, r := range rows {
-		tracks = append(tracks, TrackRecord{
-			ArtistName: r.ArtistName,
-			AlbumTitle: r.AlbumTitle,
-			Title:      r.Title,
-			Position:   int(r.Position),
-			MBID:       r.Mbid,
-			LengthMS:   int(r.LengthMs),
-			Local:      r.Local != 0,
-		})
-	}
-	return tracks, nil
-}
-
-// IsFollowed returns whether an artist is followed, defaulting to true if no row exists.
-func (d *DB) IsFollowed(artist string) (bool, error) {
-	followed, err := d.q.GetFollowed(bg, Normalize(artist))
-	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
-	}
-	if err != nil {
-		return true, err
-	}
-	return followed != 0, nil
-}
-
-// SetFollowed sets the followed status for an artist.
-func (d *DB) SetFollowed(artist string, followed bool) error {
-	id, err := d.EnsureArtist(artist)
-	if err != nil {
-		return err
-	}
-	return d.q.SetFollowed(bg, int64(boolToInt(followed)), id)
-}
-
-// MarkReviewed sets the reviewed_at date for an artist to the latest album
-// release date in the catalog. This marks all current albums as "seen."
-func (d *DB) MarkReviewed(artistName string) error {
-	id, err := d.EnsureArtist(artistName)
-	if err != nil {
-		return err
-	}
-	return d.q.MarkReviewed(bg, id)
-}
-
-// MarkLocalTracks cross-references the files table to set local flag on tracks.
-func (d *DB) MarkLocalTracks(artistName string) error {
-	return d.q.MarkLocalTracks(bg, Normalize(artistName))
-}
-
 // RemoveStaleFiles deletes file records whose paths are not in livePaths.
 func (d *DB) RemoveStaleFiles(livePaths map[string]struct{}) (int64, error) {
-	paths, err := d.q.AllFilePaths(bg)
+	paths, err := d.Q.AllFilePaths(bg)
 	if err != nil {
 		return 0, err
 	}
@@ -983,7 +687,7 @@ func (d *DB) RemoveStaleFiles(livePaths map[string]struct{}) (int64, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	qtx := d.q.WithTx(tx)
+	qtx := d.Q.WithTx(tx)
 	var removed int64
 	for _, p := range stale {
 		if err := qtx.DeleteFileByPath(bg, p); err != nil {
@@ -1001,11 +705,6 @@ type PruneResult struct {
 	Tracks  int64
 }
 
-// UnfollowedArtistNames returns the names of all unfollowed artists.
-func (d *DB) UnfollowedArtistNames() ([]string, error) {
-	return d.q.ListUnfollowedArtistNames(bg)
-}
-
 // PruneUnfollowed deletes albums, tracks, and artist records for all
 // unfollowed artists. Files are not affected.
 func (d *DB) PruneUnfollowed() (PruneResult, error) {
@@ -1017,7 +716,7 @@ func (d *DB) PruneUnfollowed() (PruneResult, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	qtx := d.q.WithTx(tx)
+	qtx := d.Q.WithTx(tx)
 
 	r.Tracks, err = qtx.DeleteUnfollowedTracks(bg)
 	if err != nil {
@@ -1035,6 +734,51 @@ func (d *DB) PruneUnfollowed() (PruneResult, error) {
 	}
 
 	return r, tx.Commit()
+}
+
+// SetFollowed sets the followed status for an artist.
+func (d *DB) SetFollowed(artist string, followed bool) error {
+	id, err := d.EnsureArtist(artist)
+	if err != nil {
+		return err
+	}
+	return d.Q.SetFollowed(bg, int64(BoolToInt(followed)), id)
+}
+
+// MarkReviewed sets the reviewed_at date for an artist to the latest album
+// release date in the catalog. This marks all current albums as "seen."
+func (d *DB) MarkReviewed(artistName string) error {
+	id, err := d.EnsureArtist(artistName)
+	if err != nil {
+		return err
+	}
+	return d.Q.MarkReviewed(bg, id)
+}
+
+// MarkArtistNotFound ensures an artist exists and sets not_found = 1.
+func (d *DB) MarkArtistNotFound(name string) error {
+	id, err := d.EnsureArtist(name)
+	if err != nil {
+		return err
+	}
+	return d.Q.MarkArtistNotFound(bg, id)
+}
+
+// MarkLocalTracks cross-references the files table to set local flag on tracks.
+func (d *DB) MarkLocalTracks(artistName string) error {
+	return d.Q.MarkLocalTracks(bg, Normalize(artistName))
+}
+
+// IsFollowed returns whether an artist is followed, defaulting to true if no row exists.
+func (d *DB) IsFollowed(artist string) (bool, error) {
+	followed, err := d.Q.GetFollowed(bg, Normalize(artist))
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return true, err
+	}
+	return followed != 0, nil
 }
 
 // Vacuum runs VACUUM on the database to reclaim space.
