@@ -73,7 +73,8 @@ SELECT dn.name,
        CAST(COALESCE(a.followed, 1) AS INTEGER) AS followed,
        CAST(CASE WHEN hn.name_norm IS NOT NULL THEN 1 ELSE 0 END AS INTEGER) AS has_new,
        CAST(COALESCE(tc.local_tracks, 0) AS INTEGER) AS local_tracks,
-       CAST(COALESCE(tc.local_albums, 0) AS INTEGER) AS local_albums
+       CAST(COALESCE(tc.local_albums, 0) AS INTEGER) AS local_albums,
+       CAST(COALESCE(a.latest_date, '') AS TEXT) AS latest_date
 FROM file_stats fs
 JOIN display_names dn ON dn.artist_norm = fs.artist_norm
 LEFT JOIN artists a ON a.name_norm = fs.artist_norm
@@ -95,6 +96,7 @@ type ArtistSummariesRow struct {
 	HasNew      int64
 	LocalTracks int64
 	LocalAlbums int64
+	LatestDate  string
 }
 
 func (q *Queries) ArtistSummaries(ctx context.Context) ([]ArtistSummariesRow, error) {
@@ -118,6 +120,7 @@ func (q *Queries) ArtistSummaries(ctx context.Context) ([]ArtistSummariesRow, er
 			&i.HasNew,
 			&i.LocalTracks,
 			&i.LocalAlbums,
+			&i.LatestDate,
 		); err != nil {
 			return nil, err
 		}

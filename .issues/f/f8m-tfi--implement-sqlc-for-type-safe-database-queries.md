@@ -1,15 +1,15 @@
 ---
 # f8m-tfi
 title: Implement sqlc for type-safe database queries
-status: review
+status: completed
 type: task
 priority: normal
 created_at: 2026-03-21T16:12:50Z
-updated_at: 2026-03-21T17:03:52Z
+updated_at: 2026-03-21T18:05:15Z
 sync:
     github:
         issue_number: "56"
-        synced_at: "2026-03-21T17:05:47Z"
+        synced_at: "2026-03-21T18:15:15Z"
 ---
 
 Replace hand-written SQL in `internal/state/db.go` (1,293 lines, ~33 methods) with sqlc-generated type-safe Go code, following the pattern established in pacer/core.

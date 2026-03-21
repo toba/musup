@@ -87,6 +87,7 @@ func helpView(width, height int, bg string, fromView viewState) string {
 		shortcuts = []shortcut{
 			{"/", "Filter artists"},
 			{"n", "Toggle new releases filter"},
+			{"1-9", "Filter by release recency"},
 			{"r", "Mark as reviewed"},
 			{"f", "Follow / unfollow"},
 			{"o", "Sort order"},
@@ -144,6 +145,7 @@ func summariesToItems(summaries []db.ArtistSummariesRow) []artistItem {
 			trackCount:  trackCount,
 			totalAlbums: int(s.TotalAlbums),
 			totalTracks: int(s.TotalTracks),
+			latestDate:  s.LatestDate,
 			synced:      synced,
 			followed:    s.Followed != 0,
 			hasNew:      s.HasNew != 0,

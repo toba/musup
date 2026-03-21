@@ -1,12 +1,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
-
-	"context"
+	"time"
 
 	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
@@ -24,6 +24,7 @@ type artistItem struct {
 	trackCount  int    // local
 	totalAlbums int    // catalog (0 = not synced)
 	totalTracks int    // catalog (0 = not synced)
+	latestDate  string // ISO date of most recent catalog release
 	synced      bool
 	followed    bool
 	hasNew      bool
@@ -150,13 +151,14 @@ func computeColumnWidths(items []artistItem) (trackNumWidth, albumNumWidth int) 
 }
 
 type listModel struct {
-	list     list.Model
-	db       *db.DB
-	allItems []artistItem
-	colW     *colWidths
-	sync     *syncState
-	sortMode sortMode
-	showNew  bool // filter to artists with newer catalog albums
+	list        list.Model
+	db          *db.DB
+	allItems    []artistItem
+	colW        *colWidths
+	sync        *syncState
+	sortMode    sortMode
+	showNew     bool // filter to artists with newer catalog albums
+	recentYears int  // 0 = off, 1-9 = filter to last N years
 }
 
 func newListModel(d *db.DB, summaries []db.ArtistSummariesRow, width, height int) listModel {
@@ -268,6 +270,26 @@ func (m listModel) Update(msg tea.Msg) (listModel, tea.Cmd) {
 				return m, nil
 			}
 			return m, m.startPruneCmd()
+		case "0":
+			if m.recentYears > 0 {
+				m.recentYears = 0
+				m.applySort()
+				m.list.NewStatusMessage(subtleStyle.Render("Year filter cleared"))
+			}
+			return m, nil
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			n, _ := strconv.Atoi(msg.String())
+			if n == m.recentYears {
+				m.recentYears = 0
+				m.applySort()
+				m.list.NewStatusMessage(subtleStyle.Render("Year filter cleared"))
+			} else {
+				m.recentYears = n
+				m.applySort()
+				label := fmt.Sprintf("last %d %s", n, pluralize(n, "year", "years"))
+				m.list.NewStatusMessage(localStyle.Render("Showing artists with releases in the " + label))
+			}
+			return m, nil
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		}
@@ -316,16 +338,26 @@ func (m *listModel) refreshFrom(summaries []db.ArtistSummariesRow) {
 }
 
 func (m *listModel) applySort() {
-	var filtered []artistItem
-	if m.showNew {
-		for _, item := range m.allItems {
-			if item.followed && item.hasNew {
-				filtered = append(filtered, item)
+	var minYear int
+	if m.recentYears > 0 {
+		minYear = time.Now().Year() - m.recentYears + 1
+	}
+
+	filtered := make([]artistItem, 0, len(m.allItems))
+	for _, item := range m.allItems {
+		if m.showNew && (!item.followed || !item.hasNew) {
+			continue
+		}
+		if minYear > 0 {
+			if len(item.latestDate) < 4 {
+				continue
+			}
+			y, err := strconv.Atoi(item.latestDate[:4])
+			if err != nil || y < minYear {
+				continue
 			}
 		}
-	} else {
-		filtered = make([]artistItem, len(m.allItems))
-		copy(filtered, m.allItems)
+		filtered = append(filtered, item)
 	}
 	sortArtists(filtered, m.sortMode)
 
@@ -338,17 +370,24 @@ func (m *listModel) applySort() {
 }
 
 func (m *listModel) updateTitle(count int) {
+	title := fmt.Sprintf("musup — %d artists", count)
+	var suffixes []string
 	if m.showNew {
-		m.list.Title = fmt.Sprintf("musup — %d artists with new releases", count)
-	} else {
-		m.list.Title = fmt.Sprintf("musup — %d artists", count)
+		suffixes = append(suffixes, "new releases")
 	}
+	if m.recentYears > 0 {
+		suffixes = append(suffixes, fmt.Sprintf("last %d %s", m.recentYears, pluralize(m.recentYears, "year", "years")))
+	}
+	if len(suffixes) > 0 {
+		title += " (" + strings.Join(suffixes, ", ") + ")"
+	}
+	m.list.Title = title
 }
 
 func (m listModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.list.View())
-	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · r: reviewed · f: follow · o: sort · q: quit · ?: help"))
+	b.WriteString("\n" + subtleStyle.Render(" /: filter · n: new · 1-9: years · r: reviewed · f: follow · o: sort · q: quit · ?: help"))
 	return b.String()
 }
 
