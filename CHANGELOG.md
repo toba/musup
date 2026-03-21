@@ -26,6 +26,7 @@
 - Fix inconsistent local album count for synced artists
 - Filter `n` shortcut only shows followed artists with new releases
 - Fix column alignment in artist list
+- Hide guest/compilation artists who aren't album artists on any files ([#51](https://github.com/toba/musup/issues/51))
 
 ### 🗜️ Tweaks
 
@@ -37,6 +38,7 @@
 - Speed up startup; in-memory file change detection
 - Migrate TUI dependencies to v2 (`bubbletea`, `lipgloss`, `bubbles`)
 - Extract shared TUI helpers; simplify scan mutex pattern; add `boolToInt`; deduplicate `bgView`
+- Implement `sqlc` for type-safe database queries
 
 ## Week of Mar 8 – Mar 14, 2026
 

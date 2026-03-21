@@ -1,4 +1,4 @@
-package state
+package db
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/toba/musup/internal/state/model"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,7 +64,7 @@ type ArtistRecord struct {
 // DB wraps a SQLite database for musup state.
 type DB struct {
 	db *sql.DB
-	q  *model.Queries
+	q  *Queries
 }
 
 func boolToInt(b bool) int {
@@ -94,7 +93,7 @@ func Open(path string) (*DB, error) {
 		return nil, fmt.Errorf("set pragmas: %w", err)
 	}
 
-	d := &DB{db: sqlDB, q: model.New(sqlDB)}
+	d := &DB{db: sqlDB, q: New(sqlDB)}
 	if err := d.migrate(); err != nil {
 		_ = sqlDB.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -672,7 +671,7 @@ func (d *DB) backfillArtistNorm() error {
 
 // UpsertFile inserts or updates a file record.
 func (d *DB) UpsertFile(f FileRecord) error {
-	return d.q.UpsertFile(bg, model.UpsertFileParams{
+	return d.q.UpsertFile(bg, UpsertFileParams{
 		Path:          f.Path,
 		Size:          f.Size,
 		ModTime:       f.ModTime.Format(time.RFC3339),
@@ -819,7 +818,7 @@ func (d *DB) UpsertArtist(a ArtistRecord) error {
 	if err != nil {
 		return err
 	}
-	return d.q.UpdateArtistFull(bg, model.UpdateArtistFullParams{
+	return d.q.UpdateArtistFull(bg, UpdateArtistFullParams{
 		Mbid:          a.MBID,
 		LastCheckedAt: a.LastCheckedAt.Format(time.RFC3339),
 		LatestRelease: a.LatestRelease,
@@ -831,7 +830,7 @@ func (d *DB) UpsertArtist(a ArtistRecord) error {
 
 // UpsertAlbum inserts or updates an album record. Returns the album ID.
 func (d *DB) UpsertAlbum(artistID int64, a AlbumRecord) (int64, error) {
-	albumID, err := d.q.UpsertAlbum(bg, model.UpsertAlbumParams{
+	albumID, err := d.q.UpsertAlbum(bg, UpsertAlbumParams{
 		ArtistID:       artistID,
 		Title:          a.Title,
 		TitleNorm:      Normalize(a.Title),
@@ -878,7 +877,7 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 
 // UpsertTrack inserts or updates a track record.
 func (d *DB) UpsertTrack(albumID int64, t TrackRecord) error {
-	return d.q.UpsertTrack(bg, model.UpsertTrackParams{
+	return d.q.UpsertTrack(bg, UpsertTrackParams{
 		AlbumID:   albumID,
 		Title:     t.Title,
 		TitleNorm: Normalize(t.Title),

@@ -16,7 +16,7 @@ var (
 )
 
 // readASF extracts metadata from an ASF/WMA file.
-func readASF(path string) (artist, album, title string, trackNumber int) {
+func readASF(path string) (artist, album, title string, trackNumber int, isAlbumArtist bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return
@@ -26,7 +26,7 @@ func readASF(path string) (artist, album, title string, trackNumber int) {
 	return parseASF(f)
 }
 
-func parseASF(r io.ReadSeeker) (artist, album, title string, trackNumber int) {
+func parseASF(r io.ReadSeeker) (artist, album, title string, trackNumber int, isAlbumArtist bool) {
 	// Read Header Object: 16-byte GUID + 8-byte size + 4-byte child count + 2 reserved
 	var hdrGUID [16]byte
 	if err := binary.Read(r, binary.LittleEndian, &hdrGUID); err != nil {
@@ -102,6 +102,7 @@ func parseASF(r io.ReadSeeker) (artist, album, title string, trackNumber int) {
 
 	if albumArtist != "" {
 		artist = albumArtist
+		isAlbumArtist = true
 	}
 
 	return

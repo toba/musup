@@ -97,11 +97,12 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 
 	// Read tags in parallel, then upsert sequentially (single DB connection).
 	type tagResult struct {
-		cf      changedFile
-		artist  string
-		album   string
-		title   string
-		trackNo int
+		cf            changedFile
+		artist        string
+		album         string
+		title         string
+		trackNo       int
+		isAlbumArtist bool
 	}
 
 	results := make([]tagResult, 0, len(changed))
@@ -115,9 +116,9 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 			if gctx.Err() != nil {
 				return gctx.Err()
 			}
-			artist, album, title, trackNo := readTags(cf.absPath)
+			artist, album, title, trackNo, isAlbumArtist := readTags(cf.absPath)
 			mu.Lock()
-			results = append(results, tagResult{cf: cf, artist: artist, album: album, title: title, trackNo: trackNo})
+			results = append(results, tagResult{cf: cf, artist: artist, album: album, title: title, trackNo: trackNo, isAlbumArtist: isAlbumArtist})
 			mu.Unlock()
 			return nil
 		})
@@ -128,14 +129,15 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 
 	for _, r := range results {
 		if err := db.UpsertFile(state.FileRecord{
-			Path:        r.cf.relPath,
-			Size:        r.cf.size,
-			ModTime:     r.cf.modTime,
-			Artist:      r.artist,
-			Album:       r.album,
-			Title:       r.title,
-			TrackNumber: r.trackNo,
-			ScannedAt:   time.Now(),
+			Path:          r.cf.relPath,
+			Size:          r.cf.size,
+			ModTime:       r.cf.modTime,
+			Artist:        r.artist,
+			Album:         r.album,
+			Title:         r.title,
+			TrackNumber:   r.trackNo,
+			IsAlbumArtist: r.isAlbumArtist,
+			ScannedAt:     time.Now(),
 		}); err != nil {
 			return err
 		}
@@ -149,24 +151,26 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 	return nil
 }
 
-func readTags(path string) (artist, album, title string, trackNumber int) {
+func readTags(path string) (artist, album, title string, trackNumber int, isAlbumArtist bool) {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".wma" {
-		artist, album, title, trackNumber = readASF(path)
+		artist, album, title, trackNumber, isAlbumArtist = readASF(path)
 	} else {
 		f, err := os.Open(path)
 		if err != nil {
-			return "", "", "", 0
+			return "", "", "", 0, false
 		}
 		defer func() { _ = f.Close() }()
 
 		m, err := tag.ReadFrom(f)
 		if err != nil {
-			return "", "", "", 0
+			return "", "", "", 0, false
 		}
 
 		artist = m.AlbumArtist()
-		if artist == "" {
+		if artist != "" {
+			isAlbumArtist = true
+		} else {
 			artist = m.Artist()
 		}
 		title = m.Title()
@@ -186,7 +190,7 @@ func readTags(path string) (artist, album, title string, trackNumber int) {
 		}
 	}
 
-	return artist, album, title, trackNumber
+	return artist, album, title, trackNumber, isAlbumArtist
 }
 
 // parseFilename extracts track number and title from a filename like

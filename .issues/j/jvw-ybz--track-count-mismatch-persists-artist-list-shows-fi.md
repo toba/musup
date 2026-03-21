@@ -1,15 +1,15 @@
 ---
 # jvw-ybz
 title: 'Track count mismatch persists: artist list shows files but album detail shows 0 for guest/compilation artists'
-status: draft
+status: completed
 type: bug
 priority: normal
 created_at: 2026-03-20T21:22:50Z
-updated_at: 2026-03-20T21:22:50Z
+updated_at: 2026-03-21T16:37:36Z
 sync:
     github:
         issue_number: "51"
-        synced_at: "2026-03-20T21:31:31Z"
+        synced_at: "2026-03-21T16:38:30Z"
 ---
 
 ## Problem
@@ -75,3 +75,15 @@ SELECT * FROM files WHERE artist_norm = 'bruce kaphan';
 SELECT al.title_norm FROM albums al JOIN artists ar ON ar.id = al.artist_id WHERE ar.name_norm = 'bruce kaphan';
 -- pelican dreams, slider — no "hybrid"
 ```
+
+## Summary of Changes
+
+Added `is_album_artist` flag to the `files` table (migration v11). During scanning, `readTags()` now returns whether the artist came from the `AlbumArtist` tag (true) or fell back to the `Artist` tag (false). The `ArtistSummaries` query filters out artists who are only track artists (`HAVING MAX(is_album_artist) = 1`), so guest/compilation artists like Bruce Kaphan and Caoimhín Ó Raghallaigh no longer appear in the list.
+
+Files changed:
+- `internal/state/model/schema.sql` — v11 schema with `is_album_artist` column
+- `internal/state/model/file.sql` — UpsertFile includes new column
+- `internal/state/model/artist.sql` — HAVING clause in ArtistSummaries
+- `internal/state/db.go` — migration v10→11, FileRecord struct, UpsertFile wrapper
+- `internal/scan/scan.go` — readTags returns isAlbumArtist
+- `internal/scan/asf.go` — readASF/parseASF return isAlbumArtist

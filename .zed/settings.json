@@ -1,0 +1,7 @@
+{
+	"languages": {
+		"SQL": {
+			"language_servers": ["!sqls"]
+		}
+	}
+}

@@ -1,0 +1,13 @@
+version: "2"
+sql:
+  - engine: "sqlite"
+    queries: "internal/db/"
+    schema: "internal/db/schema.sql"
+    gen:
+      go:
+        package: "db"
+        out: "internal/db/"
+        output_db_file_name: "sqlc_db.go"
+        emit_json_tags: false
+        emit_interface: true
+        query_parameter_limit: 5

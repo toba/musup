@@ -114,7 +114,7 @@ func TestParseASF_FullMetadata(t *testing.T) {
 	data := buildASF("My Song", "The Author", "The Album Artist", "Great Album", 7)
 	r := bytes.NewReader(data)
 
-	artist, album, title, trackNum := parseASF(r)
+	artist, album, title, trackNum, isAlbumArtist := parseASF(r)
 
 	if artist != "The Album Artist" {
 		t.Errorf("artist = %q, want %q", artist, "The Album Artist")
@@ -128,13 +128,16 @@ func TestParseASF_FullMetadata(t *testing.T) {
 	if trackNum != 7 {
 		t.Errorf("trackNumber = %d, want %d", trackNum, 7)
 	}
+	if !isAlbumArtist {
+		t.Error("isAlbumArtist = false, want true")
+	}
 }
 
 func TestParseASF_ContentDescOnly(t *testing.T) {
 	data := buildASF("Track Title", "Artist Name", "", "", 0)
 	r := bytes.NewReader(data)
 
-	artist, album, title, trackNum := parseASF(r)
+	artist, album, title, trackNum, isAlbumArtist := parseASF(r)
 
 	if artist != "Artist Name" {
 		t.Errorf("artist = %q, want %q", artist, "Artist Name")
@@ -148,13 +151,16 @@ func TestParseASF_ContentDescOnly(t *testing.T) {
 	if trackNum != 0 {
 		t.Errorf("trackNumber = %d, want 0", trackNum)
 	}
+	if isAlbumArtist {
+		t.Error("isAlbumArtist = true, want false (no album artist tag)")
+	}
 }
 
 func TestParseASF_AlbumArtistOverridesAuthor(t *testing.T) {
 	data := buildASF("Song", "Author", "Album Artist", "Album", 1)
 	r := bytes.NewReader(data)
 
-	artist, _, _, _ := parseASF(r)
+	artist, _, _, _, _ := parseASF(r)
 
 	if artist != "Album Artist" {
 		t.Errorf("artist = %q, want %q (albumArtist should override author)", artist, "Album Artist")
@@ -163,7 +169,7 @@ func TestParseASF_AlbumArtistOverridesAuthor(t *testing.T) {
 
 func TestParseASF_EmptyFile(t *testing.T) {
 	r := bytes.NewReader(nil)
-	artist, album, title, trackNum := parseASF(r)
+	artist, album, title, trackNum, _ := parseASF(r)
 
 	if artist != "" || album != "" || title != "" || trackNum != 0 {
 		t.Errorf("expected zero values for empty input, got (%q, %q, %q, %d)", artist, album, title, trackNum)
@@ -173,7 +179,7 @@ func TestParseASF_EmptyFile(t *testing.T) {
 func TestParseASF_BadGUID(t *testing.T) {
 	data := make([]byte, 30)
 	r := bytes.NewReader(data)
-	artist, album, title, trackNum := parseASF(r)
+	artist, album, title, trackNum, _ := parseASF(r)
 
 	if artist != "" || album != "" || title != "" || trackNum != 0 {
 		t.Errorf("expected zero values for bad GUID, got (%q, %q, %q, %d)", artist, album, title, trackNum)
@@ -182,7 +188,7 @@ func TestParseASF_BadGUID(t *testing.T) {
 
 func TestReadASF_Fixture(t *testing.T) {
 	path := filepath.Join("testdata", "fixture.wma")
-	artist, album, title, trackNum := readASF(path)
+	artist, album, title, trackNum, _ := readASF(path)
 
 	if artist != "3 Doors Down" {
 		t.Errorf("artist = %q, want %q", artist, "3 Doors Down")
