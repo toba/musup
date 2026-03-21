@@ -1,4 +1,4 @@
--- musup schema v11 (final state after all migrations)
+-- musup schema v13 (final state after all migrations)
 
 CREATE TABLE files (
     path            TEXT PRIMARY KEY,
@@ -21,9 +21,7 @@ CREATE TABLE artists (
     name_norm       TEXT NOT NULL UNIQUE,
     mbid            TEXT NOT NULL DEFAULT '',
     last_checked_at TEXT NOT NULL DEFAULT '',
-    not_found       INTEGER NOT NULL DEFAULT 0,
-    followed        INTEGER NOT NULL DEFAULT 1,
-    reviewed_at     TEXT NOT NULL DEFAULT ''
+    not_found       INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE albums (
@@ -36,18 +34,6 @@ CREATE TABLE albums (
     primary_type    TEXT NOT NULL DEFAULT '',
     secondary_types TEXT NOT NULL DEFAULT '',
     UNIQUE (artist_id, title)
-);
-
-CREATE TABLE tracks (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    album_id   INTEGER NOT NULL REFERENCES albums(id),
-    title      TEXT NOT NULL,
-    title_norm TEXT NOT NULL DEFAULT '',
-    position   INTEGER NOT NULL DEFAULT 0,
-    mbid       TEXT NOT NULL DEFAULT '',
-    length_ms  INTEGER NOT NULL DEFAULT 0,
-    local      INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (album_id, title_norm)
 );
 
 CREATE INDEX idx_albums_artist_id ON albums(artist_id);

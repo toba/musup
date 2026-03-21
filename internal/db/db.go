@@ -237,6 +237,23 @@ func (d *DB) migrate() error {
 		version = 12
 	}
 
+	// Version 12 → 13: drop tracks table, remove followed/reviewed_at/monitor from artists
+	if version < 13 {
+		if _, err := d.db.Exec("DROP TABLE IF EXISTS tracks"); err != nil {
+			return err
+		}
+		if err := d.dropColumnIfExists("artists", "followed"); err != nil {
+			return err
+		}
+		if err := d.dropColumnIfExists("artists", "reviewed_at"); err != nil {
+			return err
+		}
+		if err := d.dropColumnIfExists("artists", "monitor"); err != nil {
+			return err
+		}
+		version = 13
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -408,7 +425,7 @@ func (d *DB) migrateToIntegerPKs() error {
 	return tx.Commit()
 }
 
-func (d *DB) dropColumnIfExists(table, column string) error {
+func (d *DB) dropColumnIfExists(table, column string) error { //nolint:unparam // table varies across migration versions
 	var count int
 	err := d.db.QueryRow(
 		fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column),
@@ -654,11 +671,6 @@ func NormalizeAlbumParams(p *UpsertAlbumParams) {
 	p.TitleNorm = Normalize(p.Title)
 }
 
-// NormalizeTrackParams fills in the TitleNorm field.
-func NormalizeTrackParams(p *UpsertTrackParams) {
-	p.TitleNorm = Normalize(p.Title)
-}
-
 // EnsureArtist finds an artist by normalized name or creates one, returning the ID.
 func (d *DB) EnsureArtist(name string) (int64, error) {
 	norm := Normalize(name)
@@ -670,21 +682,6 @@ func (d *DB) EnsureArtist(name string) (int64, error) {
 		return 0, err
 	}
 	return d.Q.InsertArtist(bg, name, norm)
-}
-
-// UpsertAlbum inserts or updates an album record. Returns the album ID.
-func (d *DB) UpsertAlbum(artistID int64, p UpsertAlbumParams) (int64, error) {
-	albumID, err := d.Q.UpsertAlbum(bg, p)
-	if err != nil {
-		return 0, err
-	}
-	if albumID == 0 {
-		albumID, err = d.Q.GetAlbumID(bg, artistID, p.Title)
-		if err != nil {
-			return 0, err
-		}
-	}
-	return albumID, nil
 }
 
 // RemoveStaleFiles deletes file records whose paths are not in livePaths.
@@ -722,63 +719,6 @@ func (d *DB) RemoveStaleFiles(livePaths map[string]struct{}) (int64, error) {
 	return removed, tx.Commit()
 }
 
-// PruneResult holds counts from a prune operation.
-type PruneResult struct {
-	Artists int64
-	Albums  int64
-	Tracks  int64
-}
-
-// PruneUnfollowed deletes albums, tracks, and artist records for all
-// unfollowed artists. Files are not affected.
-func (d *DB) PruneUnfollowed() (PruneResult, error) {
-	var r PruneResult
-
-	tx, err := d.db.Begin()
-	if err != nil {
-		return r, err
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	qtx := d.Q.WithTx(tx)
-
-	r.Tracks, err = qtx.DeleteUnfollowedTracks(bg)
-	if err != nil {
-		return r, err
-	}
-
-	r.Albums, err = qtx.DeleteUnfollowedAlbums(bg)
-	if err != nil {
-		return r, err
-	}
-
-	r.Artists, err = qtx.DeleteUnfollowedArtists(bg)
-	if err != nil {
-		return r, err
-	}
-
-	return r, tx.Commit()
-}
-
-// SetFollowed sets the followed status for an artist.
-func (d *DB) SetFollowed(artist string, followed bool) error {
-	id, err := d.EnsureArtist(artist)
-	if err != nil {
-		return err
-	}
-	return d.Q.SetFollowed(bg, int64(BoolToInt(followed)), id)
-}
-
-// MarkReviewed sets the reviewed_at date for an artist to the latest album
-// release date in the catalog. This marks all current albums as "seen."
-func (d *DB) MarkReviewed(artistName string) error {
-	id, err := d.EnsureArtist(artistName)
-	if err != nil {
-		return err
-	}
-	return d.Q.MarkReviewed(bg, id)
-}
-
 // MarkArtistNotFound ensures an artist exists and sets not_found = 1.
 func (d *DB) MarkArtistNotFound(name string) error {
 	id, err := d.EnsureArtist(name)
@@ -786,23 +726,6 @@ func (d *DB) MarkArtistNotFound(name string) error {
 		return err
 	}
 	return d.Q.MarkArtistNotFound(bg, id)
-}
-
-// MarkLocalTracks cross-references the files table to set local flag on tracks.
-func (d *DB) MarkLocalTracks(artistName string) error {
-	return d.Q.MarkLocalTracks(bg, Normalize(artistName))
-}
-
-// IsFollowed returns whether an artist is followed, defaulting to true if no row exists.
-func (d *DB) IsFollowed(artist string) (bool, error) {
-	followed, err := d.Q.GetFollowed(bg, Normalize(artist))
-	if errors.Is(err, sql.ErrNoRows) {
-		return true, nil
-	}
-	if err != nil {
-		return true, err
-	}
-	return followed != 0, nil
 }
 
 // Vacuum runs VACUUM on the database to reclaim space.

@@ -4,6 +4,7 @@
 
 ### ✨ Features
 
+- Simplify to single-argument CLI; `musup [years]` replaces interactive TUI ([#60](https://github.com/toba/musup/issues/60))
 - Merge artists with names differing only by case or punctuation
 - Filter artist list to show only artists with newer albums than local
 - Highlight entire row when navigating artist list

@@ -23,12 +23,12 @@ func TestScan_EmptyDir(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	artists, err := d.Q.UniqueArtists(context.Background())
+	norms, err := d.Q.DistinctArtistNorms(context.Background())
 	if err != nil {
-		t.Fatalf("UniqueArtists: %v", err)
+		t.Fatalf("DistinctArtistNorms: %v", err)
 	}
-	if len(artists) != 0 {
-		t.Fatalf("expected 0 artists, got %d", len(artists))
+	if len(norms) != 0 {
+		t.Fatalf("expected 0 artists, got %d", len(norms))
 	}
 }
 
@@ -50,12 +50,12 @@ func TestScan_SkipsUnsupportedExtensions(t *testing.T) {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	artists, err := d.Q.UniqueArtists(context.Background())
+	norms, err := d.Q.DistinctArtistNorms(context.Background())
 	if err != nil {
-		t.Fatalf("UniqueArtists: %v", err)
+		t.Fatalf("DistinctArtistNorms: %v", err)
 	}
-	if len(artists) != 0 {
-		t.Fatalf("expected 0 artists, got %d", len(artists))
+	if len(norms) != 0 {
+		t.Fatalf("expected 0 artists, got %d", len(norms))
 	}
 }
 

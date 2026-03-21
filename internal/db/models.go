@@ -22,8 +22,6 @@ type Artist struct {
 	Mbid          string
 	LastCheckedAt string
 	NotFound      int64
-	Followed      int64
-	ReviewedAt    string
 }
 
 type File struct {
@@ -39,15 +37,4 @@ type File struct {
 	TrackNumber   int64
 	IsAlbumArtist int64
 	ScannedAt     string
-}
-
-type Track struct {
-	ID        int64
-	AlbumID   int64
-	Title     string
-	TitleNorm string
-	Position  int64
-	Mbid      string
-	LengthMs  int64
-	Local     int64
 }

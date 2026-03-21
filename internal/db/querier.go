@@ -11,30 +11,17 @@ import (
 type Querier interface {
 	AllFileMeta(ctx context.Context) ([]AllFileMetaRow, error)
 	AllFilePaths(ctx context.Context) ([]string, error)
-	ArtistSummaries(ctx context.Context) ([]ArtistSummariesRow, error)
 	DeleteFileByPath(ctx context.Context, path string) error
-	DeleteUnfollowedAlbums(ctx context.Context) (int64, error)
-	DeleteUnfollowedArtists(ctx context.Context) (int64, error)
-	DeleteUnfollowedTracks(ctx context.Context) (int64, error)
-	GetAlbumID(ctx context.Context, artistID int64, title string) (int64, error)
+	DistinctArtistNorms(ctx context.Context) ([]string, error)
 	GetArtistByNameNorm(ctx context.Context, nameNorm string) (GetArtistByNameNormRow, error)
-	GetFollowed(ctx context.Context, nameNorm string) (int64, error)
 	InsertArtist(ctx context.Context, name string, nameNorm string) (int64, error)
-	ListAlbumsByArtist(ctx context.Context, nameNorm string) ([]ListAlbumsByArtistRow, error)
-	ListKnownAlbumMBIDs(ctx context.Context, nameNorm string) ([]string, error)
-	ListTracksByAlbum(ctx context.Context, nameNorm string, title string) ([]ListTracksByAlbumRow, error)
-	ListUnfollowedArtistNames(ctx context.Context) ([]string, error)
-	LocalAlbums(ctx context.Context, artistNorm string) ([]string, error)
 	MarkArtistNotFound(ctx context.Context, id int64) error
-	MarkLocalTracks(ctx context.Context, nameNorm string) error
-	MarkReviewed(ctx context.Context, artistID int64) error
-	SetFollowed(ctx context.Context, followed int64, iD int64) error
-	UniqueArtists(ctx context.Context) ([]string, error)
+	// Artists with MB albums released since cutoff that aren't in local files.
+	NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error)
 	UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error
 	UpdateArtistMeta(ctx context.Context, mbid string, lastCheckedAt string, iD int64) error
-	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) (int64, error)
+	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) error
 	UpsertFile(ctx context.Context, arg UpsertFileParams) error
-	UpsertTrack(ctx context.Context, arg UpsertTrackParams) error
 }
 
 var _ Querier = (*Queries)(nil)

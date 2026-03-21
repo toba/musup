@@ -11,7 +11,7 @@ import (
 // The file is gitignored; benchmarks that need it are skipped if absent.
 // To populate it:
 //
-//	cp "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music/.musup.db" internal/state/testdata/large.db
+//	cp "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music/.musup.db" internal/db/testdata/large.db
 func openLargeDB(tb testing.TB) *DB {
 	tb.Helper()
 	src := filepath.Join("testdata", "large.db")
@@ -49,18 +49,18 @@ func copyFile(src, dst string) error {
 	return err
 }
 
-func BenchmarkArtistSummaries(b *testing.B) {
+func BenchmarkNewerReleases(b *testing.B) {
 	db := openLargeDB(b)
 
-	// Warm up (first call may trigger migration).
-	if _, err := db.Q.ArtistSummaries(bg); err != nil {
-		b.Fatalf("ArtistSummaries: %v", err)
+	// Warm up.
+	if _, err := db.Q.NewerReleases(bg, "2020-01-01"); err != nil {
+		b.Fatalf("NewerReleases: %v", err)
 	}
 
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := db.Q.ArtistSummaries(bg); err != nil {
-			b.Fatalf("ArtistSummaries: %v", err)
+		if _, err := db.Q.NewerReleases(bg, "2020-01-01"); err != nil {
+			b.Fatalf("NewerReleases: %v", err)
 		}
 	}
 }

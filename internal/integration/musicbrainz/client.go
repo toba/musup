@@ -107,26 +107,6 @@ func (c *Client) AllReleaseGroups(ctx context.Context, artistMBID, typeFilter st
 	}, nil
 }
 
-// BrowseReleases returns releases for a release group MBID.
-// Use inc to request sub-resources (e.g. "recordings") or "" for none.
-func (c *Client) BrowseReleases(ctx context.Context, releaseGroupMBID, inc string, limit, offset int) (*ReleaseBrowseResult, error) {
-	params := url.Values{
-		"release-group": {releaseGroupMBID},
-		"fmt":           {"json"},
-		"limit":         {strconv.Itoa(limit)},
-		"offset":        {strconv.Itoa(offset)},
-	}
-	if inc != "" {
-		params.Set("inc", inc)
-	}
-
-	var result ReleaseBrowseResult
-	if err := c.get(ctx, "/release", params, &result); err != nil {
-		return nil, fmt.Errorf("browse releases: %w", err)
-	}
-	return &result, nil
-}
-
 func (c *Client) get(ctx context.Context, path string, params url.Values, dest any) error {
 	if err := c.limiter.Wait(ctx); err != nil {
 		return err

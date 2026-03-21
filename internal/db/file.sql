@@ -23,8 +23,6 @@ SELECT path FROM files;
 -- name: DeleteFileByPath :exec
 DELETE FROM files WHERE path = ?;
 
--- name: UniqueArtists :many
-SELECT DISTINCT artist FROM files WHERE artist != '' ORDER BY artist;
-
--- name: LocalAlbums :many
-SELECT DISTINCT album FROM files WHERE artist_norm = ? AND album != '' ORDER BY album;
+-- name: DistinctArtistNorms :many
+SELECT DISTINCT artist_norm FROM files
+WHERE artist != '' AND is_album_artist = 1 AND artist_norm != '';

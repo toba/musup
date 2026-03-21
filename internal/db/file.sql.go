@@ -84,50 +84,24 @@ func (q *Queries) DeleteFileByPath(ctx context.Context, path string) error {
 	return err
 }
 
-const localAlbums = `-- name: LocalAlbums :many
-SELECT DISTINCT album FROM files WHERE artist_norm = ? AND album != '' ORDER BY album
+const distinctArtistNorms = `-- name: DistinctArtistNorms :many
+SELECT DISTINCT artist_norm FROM files
+WHERE artist != '' AND is_album_artist = 1 AND artist_norm != ''
 `
 
-func (q *Queries) LocalAlbums(ctx context.Context, artistNorm string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, localAlbums, artistNorm)
+func (q *Queries) DistinctArtistNorms(ctx context.Context) ([]string, error) {
+	rows, err := q.db.QueryContext(ctx, distinctArtistNorms)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var items []string
 	for rows.Next() {
-		var album string
-		if err := rows.Scan(&album); err != nil {
+		var artist_norm string
+		if err := rows.Scan(&artist_norm); err != nil {
 			return nil, err
 		}
-		items = append(items, album)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const uniqueArtists = `-- name: UniqueArtists :many
-SELECT DISTINCT artist FROM files WHERE artist != '' ORDER BY artist
-`
-
-func (q *Queries) UniqueArtists(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, uniqueArtists)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var artist string
-		if err := rows.Scan(&artist); err != nil {
-			return nil, err
-		}
-		items = append(items, artist)
+		items = append(items, artist_norm)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err

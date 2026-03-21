@@ -9,62 +9,64 @@ import (
 	"context"
 )
 
-const getAlbumID = `-- name: GetAlbumID :one
-SELECT id FROM albums WHERE artist_id = ? AND title = ?
+const newerReleases = `-- name: NewerReleases :many
+WITH local_artists AS (
+    SELECT artist_norm
+    FROM files
+    WHERE artist != '' AND album != ''
+    GROUP BY artist_norm
+    HAVING MAX(is_album_artist) = 1
+),
+display_names AS (
+    SELECT artist_norm, artist AS name
+    FROM (
+        SELECT artist_norm, artist,
+               ROW_NUMBER() OVER (PARTITION BY artist_norm ORDER BY COUNT(*) DESC) AS rn
+        FROM files WHERE artist != ''
+        GROUP BY artist_norm, artist
+    ) WHERE rn = 1
+)
+SELECT dn.name AS artist_name,
+       al.title AS album_title,
+       al.release_date,
+       al.primary_type,
+       al.secondary_types
+FROM local_artists la
+JOIN display_names dn ON dn.artist_norm = la.artist_norm
+JOIN artists ar ON ar.name_norm = la.artist_norm
+JOIN albums al ON al.artist_id = ar.id
+WHERE al.release_date >= ?
+  AND al.title_norm NOT IN (
+      SELECT DISTINCT album_norm FROM files
+      WHERE artist_norm = la.artist_norm AND album_norm != ''
+  )
+ORDER BY dn.name, al.release_date DESC
 `
 
-func (q *Queries) GetAlbumID(ctx context.Context, artistID int64, title string) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getAlbumID, artistID, title)
-	var id int64
-	err := row.Scan(&id)
-	return id, err
-}
-
-const listAlbumsByArtist = `-- name: ListAlbumsByArtist :many
-SELECT ar.name, al.title, al.mbid, al.release_date, al.primary_type,
-       al.secondary_types, CAST(COALESCE(t.total, 0) AS INTEGER) AS total_tracks, CAST(COALESCE(t.local, 0) AS INTEGER) AS local_tracks
-FROM albums al
-JOIN artists ar ON ar.id = al.artist_id
-LEFT JOIN (
-    SELECT album_id,
-           COUNT(*) AS total,
-           SUM(local) AS local
-    FROM tracks
-    GROUP BY album_id
-) t ON t.album_id = al.id
-WHERE ar.name_norm = ?
-ORDER BY al.release_date ASC, al.title ASC
-`
-
-type ListAlbumsByArtistRow struct {
-	Name           string
-	Title          string
-	Mbid           string
+type NewerReleasesRow struct {
+	ArtistName     string
+	AlbumTitle     string
 	ReleaseDate    string
 	PrimaryType    string
 	SecondaryTypes string
-	TotalTracks    int64
-	LocalTracks    int64
 }
 
-func (q *Queries) ListAlbumsByArtist(ctx context.Context, nameNorm string) ([]ListAlbumsByArtistRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAlbumsByArtist, nameNorm)
+// Artists with MB albums released since cutoff that aren't in local files.
+func (q *Queries) NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error) {
+	rows, err := q.db.QueryContext(ctx, newerReleases, releaseDate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListAlbumsByArtistRow
+	var items []NewerReleasesRow
 	for rows.Next() {
-		var i ListAlbumsByArtistRow
+		var i NewerReleasesRow
 		if err := rows.Scan(
-			&i.Name,
-			&i.Title,
-			&i.Mbid,
+			&i.ArtistName,
+			&i.AlbumTitle,
 			&i.ReleaseDate,
 			&i.PrimaryType,
 			&i.SecondaryTypes,
-			&i.TotalTracks,
-			&i.LocalTracks,
 		); err != nil {
 			return nil, err
 		}
@@ -79,38 +81,7 @@ func (q *Queries) ListAlbumsByArtist(ctx context.Context, nameNorm string) ([]Li
 	return items, nil
 }
 
-const listKnownAlbumMBIDs = `-- name: ListKnownAlbumMBIDs :many
-SELECT DISTINCT al.mbid
-FROM albums al
-JOIN artists ar ON ar.id = al.artist_id
-JOIN tracks t ON t.album_id = al.id
-WHERE ar.name_norm = ? AND al.mbid != ''
-`
-
-func (q *Queries) ListKnownAlbumMBIDs(ctx context.Context, nameNorm string) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, listKnownAlbumMBIDs, nameNorm)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []string
-	for rows.Next() {
-		var mbid string
-		if err := rows.Scan(&mbid); err != nil {
-			return nil, err
-		}
-		items = append(items, mbid)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const upsertAlbum = `-- name: UpsertAlbum :execlastid
+const upsertAlbum = `-- name: UpsertAlbum :exec
 INSERT INTO albums (artist_id, title, title_norm, mbid, release_date, primary_type, secondary_types)
 VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(artist_id, title) DO UPDATE SET
@@ -131,8 +102,8 @@ type UpsertAlbumParams struct {
 	SecondaryTypes string
 }
 
-func (q *Queries) UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, upsertAlbum,
+func (q *Queries) UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) error {
+	_, err := q.db.ExecContext(ctx, upsertAlbum,
 		arg.ArtistID,
 		arg.Title,
 		arg.TitleNorm,
@@ -141,8 +112,5 @@ func (q *Queries) UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) (int64
 		arg.PrimaryType,
 		arg.SecondaryTypes,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.LastInsertId()
+	return err
 }
