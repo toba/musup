@@ -89,8 +89,8 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		trackNum = strconv.Itoa(ai.trackCount)
 	}
 	trackNoun := "tracks"
-	if !ai.synced && ai.trackCount == 1 {
-		trackNoun = "track"
+	if !ai.synced {
+		trackNoun = pluralize(ai.trackCount, "track", "tracks")
 	}
 	trackStr := fmt.Sprintf("%*s %-6s", d.widths.trackNum, trackNum, trackNoun)
 
@@ -102,8 +102,8 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 		albumNum = strconv.Itoa(ai.albumCount)
 	}
 	albumNoun := "albums"
-	if !ai.synced && ai.albumCount == 1 {
-		albumNoun = "album"
+	if !ai.synced {
+		albumNoun = pluralize(ai.albumCount, "album", "albums")
 	}
 	albumStr := fmt.Sprintf("%*s %-6s", d.widths.albumNum, albumNum, albumNoun)
 
@@ -121,7 +121,7 @@ func (d artistDelegate) Render(w io.Writer, m list.Model, index int, item list.I
 
 	colStyle := mutedStyle
 	if isSelected {
-		colStyle = lipgloss.NewStyle().Foreground(colorAccent)
+		colStyle = accentStyle
 	}
 
 	line := cursor + statusInd + nameStyle.Render(name) + " " + colStyle.Render(trackStr) + "  " + colStyle.Render(albumStr)

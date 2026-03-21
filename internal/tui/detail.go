@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/integration/musicbrainz"
 	"github.com/toba/musup/internal/state"
@@ -116,10 +115,7 @@ func (m detailModel) View() string {
 
 	header := titleStyle.Render(m.artist)
 	count := m.itemCount()
-	noun := "albums"
-	if count == 1 {
-		noun = "album"
-	}
+	noun := pluralize(count, "album", "albums")
 	albumCount := mutedStyle.Render(fmt.Sprintf("%d %s", count, noun))
 	b.WriteString(header + "  " + albumCount + "\n")
 	b.WriteString(headerSep + "\n\n")
@@ -161,12 +157,7 @@ func (m detailModel) renderCatalog(b *strings.Builder) {
 
 	for i := m.offset; i < end; i++ {
 		a := m.catalogAlbums[i]
-		cursor := "  "
-		style := lipgloss.NewStyle()
-		if i == m.cursor {
-			cursor = cursorStyle.Render("> ")
-			style = style.Foreground(colorAccent)
-		}
+		cursor, style := cursorPrefix(i == m.cursor)
 
 		year := "    "
 		if len(a.ReleaseDate) >= 4 {
@@ -203,12 +194,7 @@ func (m detailModel) renderLocalAlbums(b *strings.Builder) {
 	end := min(m.offset+viewable, len(m.albums))
 
 	for i := m.offset; i < end; i++ {
-		cursor := "  "
-		style := lipgloss.NewStyle()
-		if i == m.cursor {
-			cursor = cursorStyle.Render("> ")
-			style = style.Foreground(colorAccent)
-		}
+		cursor, style := cursorPrefix(i == m.cursor)
 		b.WriteString(cursor + style.Render(m.albums[i]) + "\n")
 	}
 }

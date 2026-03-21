@@ -7,7 +7,7 @@ import (
 )
 
 var (
-	colorAccent = lipgloss.Color("#E040FB")
+	colorAccent = lipgloss.Color("#0E91B3")
 	colorMuted  = lipgloss.Color("#9CA3AF")
 	colorSubtle = lipgloss.Color("#555555")
 	colorError  = lipgloss.Color("#FF5555")
@@ -25,6 +25,9 @@ var (
 			Foreground(colorSubtle)
 
 	cursorStyle = lipgloss.NewStyle().
+			Foreground(colorAccent)
+
+	accentStyle = lipgloss.NewStyle().
 			Foreground(colorAccent)
 
 	errorStyle = lipgloss.NewStyle().

@@ -104,11 +104,11 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 		trackNo int
 	}
 
-	results := make([]tagResult, len(changed))
+	results := make([]tagResult, 0, len(changed))
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(8)
+	const tagReadParallelism = 8
+	g.SetLimit(tagReadParallelism)
 	var mu sync.Mutex
-	idx := 0
 
 	for _, cf := range changed {
 		g.Go(func() error {
@@ -117,8 +117,7 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 			}
 			artist, album, title, trackNo := readTags(cf.absPath)
 			mu.Lock()
-			results[idx] = tagResult{cf: cf, artist: artist, album: album, title: title, trackNo: trackNo}
-			idx++
+			results = append(results, tagResult{cf: cf, artist: artist, album: album, title: title, trackNo: trackNo})
 			mu.Unlock()
 			return nil
 		})
@@ -127,7 +126,7 @@ func Scan(ctx context.Context, db *state.DB, root string) error {
 		return err
 	}
 
-	for _, r := range results[:idx] {
+	for _, r := range results {
 		if err := db.UpsertFile(state.FileRecord{
 			Path:        r.cf.relPath,
 			Size:        r.cf.size,

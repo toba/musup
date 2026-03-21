@@ -1,15 +1,15 @@
 ---
 # lxf-3cn
 title: Add background task spinner in top-right corner
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-20T20:28:11Z
-updated_at: 2026-03-20T20:28:11Z
+updated_at: 2026-03-21T15:50:12Z
 sync:
     github:
         issue_number: "41"
-        synced_at: "2026-03-20T21:31:29Z"
+        synced_at: "2026-03-21T16:12:06Z"
 ---
 
 - [ ] Add spinner and background task tracking to main Model

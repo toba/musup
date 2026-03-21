@@ -64,6 +64,13 @@ type DB struct {
 	db *sql.DB
 }
 
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // Open opens or creates the SQLite database at path and runs migrations.
 func Open(path string) (*DB, error) {
 	sqlDB, err := sql.Open("sqlite", path)
@@ -936,15 +943,11 @@ func (d *DB) UpsertArtist(a ArtistRecord) error {
 	if err != nil {
 		return err
 	}
-	notFound := 0
-	if a.NotFound {
-		notFound = 1
-	}
 	_, err = d.db.Exec(`
 		UPDATE artists SET
 			mbid = ?, last_checked_at = ?, latest_release = ?, latest_date = ?, not_found = ?
 		WHERE id = ?`,
-		a.MBID, a.LastCheckedAt.Format(time.RFC3339), a.LatestRelease, a.LatestDate, notFound, id,
+		a.MBID, a.LastCheckedAt.Format(time.RFC3339), a.LatestRelease, a.LatestDate, boolToInt(a.NotFound), id,
 	)
 	return err
 }
@@ -1020,10 +1023,6 @@ func (d *DB) Albums(artistName string) ([]AlbumRecord, error) {
 
 // UpsertTrack inserts or updates a track record.
 func (d *DB) UpsertTrack(albumID int64, t TrackRecord) error {
-	local := 0
-	if t.Local {
-		local = 1
-	}
 	titleNorm := Normalize(t.Title)
 	const q = `
 	INSERT INTO tracks (album_id, title, title_norm, position, mbid, length_ms, local)
@@ -1035,7 +1034,7 @@ func (d *DB) UpsertTrack(albumID int64, t TrackRecord) error {
 		length_ms = excluded.length_ms,
 		local     = excluded.local
 	`
-	_, err := d.db.Exec(q, albumID, t.Title, titleNorm, t.Position, t.MBID, t.LengthMS, local)
+	_, err := d.db.Exec(q, albumID, t.Title, titleNorm, t.Position, t.MBID, t.LengthMS, boolToInt(t.Local))
 	return err
 }
 
@@ -1114,11 +1113,7 @@ func (d *DB) SetFollowed(artist string, followed bool) error {
 	if err != nil {
 		return err
 	}
-	v := 0
-	if followed {
-		v = 1
-	}
-	_, err = d.db.Exec("UPDATE artists SET followed = ? WHERE id = ?", v, id)
+	_, err = d.db.Exec("UPDATE artists SET followed = ? WHERE id = ?", boolToInt(followed), id)
 	return err
 }
 

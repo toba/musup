@@ -16,6 +16,8 @@
 
 ### 🐛 Fixes
 
+- Help modal width causes descriptions to wrap
+- Background spinner not visible when first line fills terminal width ([#44](https://github.com/toba/musup/issues/44))
 - Startup hangs; `ArtistSummaries` query takes ~51s on large databases
 - Duplicate albums in check output
 - Artist view shows track count but album view shows zero tracks
@@ -34,6 +36,7 @@
 - Refactor schema to use integer PKs instead of name-based composite keys
 - Speed up startup; in-memory file change detection
 - Migrate TUI dependencies to v2 (`bubbletea`, `lipgloss`, `bubbles`)
+- Extract shared TUI helpers; simplify scan mutex pattern; add `boolToInt`; deduplicate `bgView`
 
 ## Week of Mar 8 – Mar 14, 2026
 

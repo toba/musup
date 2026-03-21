@@ -73,16 +73,6 @@ func (m syncModel) Init() tea.Cmd {
 	return tea.Batch(m.spinner.Tick, listenForSync(m.ch))
 }
 
-func listenForSync(ch <-chan tea.Msg) tea.Cmd {
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return nil
-		}
-		return msg
-	}
-}
-
 func (m syncModel) Update(msg tea.Msg) (syncModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case syncProgressMsg:

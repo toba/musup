@@ -1,15 +1,15 @@
 ---
 # c4d-vf6
 title: Merge artists with names differing only by case or punctuation
-status: ready
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-18T18:23:44Z
-updated_at: 2026-03-18T18:23:44Z
+updated_at: 2026-03-21T15:49:50Z
 sync:
     github:
         issue_number: "27"
-        synced_at: "2026-03-18T18:40:06Z"
+        synced_at: "2026-03-21T16:12:06Z"
 ---
 
 Merge artists whose names differ only by upper/lower casing or basic punctuation (hyphen vs space, apostrophe vs none, etc.).

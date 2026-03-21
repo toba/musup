@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/toba/musup/internal/state"
 )
@@ -69,10 +68,7 @@ func (m albumDetailModel) View() string {
 	if m.year != "" {
 		yearStr = "  (" + m.year + ")"
 	}
-	noun := "tracks"
-	if len(m.tracks) == 1 {
-		noun = "track"
-	}
+	noun := pluralize(len(m.tracks), "track", "tracks")
 	header := titleStyle.Render(m.albumTitle) + mutedStyle.Render(yearStr) +
 		"  " + mutedStyle.Render(fmt.Sprintf("%d %s", len(m.tracks), noun))
 	b.WriteString(header + "\n")
@@ -104,12 +100,7 @@ func (m albumDetailModel) View() string {
 	for i := m.offset; i < end; i++ {
 		t := m.tracks[i]
 
-		cursor := "  "
-		style := lipgloss.NewStyle()
-		if i == m.cursor {
-			cursor = cursorStyle.Render("> ")
-			style = style.Foreground(colorAccent)
-		}
+		cursor, style := cursorPrefix(i == m.cursor)
 
 		num := fmt.Sprintf("%3d", t.Position)
 		titleWidth := runewidth.StringWidth(t.Title)

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
 type sortMode int
@@ -62,7 +61,7 @@ func (m sortModel) View(width, height int, bg string) string {
 		style := mutedStyle
 		if i == m.cursor {
 			cursor = cursorStyle.Render("> ")
-			style = lipgloss.NewStyle().Foreground(colorAccent)
+			style = accentStyle
 		}
 		sSb59.WriteString(cursor + style.Render(label) + "\n")
 	}

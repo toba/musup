@@ -3,9 +3,9 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/toba/musup/internal/state"
 )
@@ -15,7 +15,6 @@ const (
 	mbSearchLimit              = 5
 	mbMaxReleaseGroups         = 500
 	mbMaxReleaseGroupsComposer = 100
-	spinnerFPS                 = 80 * time.Millisecond
 	headerSepWidth             = 40
 )
 
@@ -23,10 +22,7 @@ var headerSep = subtleStyle.Render(strings.Repeat("─", headerSepWidth))
 
 func newSpinner() spinner.Model {
 	s := spinner.New()
-	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    spinnerFPS,
-	}
+	s.Spinner = spinner.MiniDot
 	s.Style = lipgloss.NewStyle().Foreground(colorAccent)
 	return s
 }
@@ -37,6 +33,31 @@ func modalStyle(width int) lipgloss.Style {
 		BorderForeground(colorAccent).
 		Padding(1, 2).
 		Width(width)
+}
+
+func listenForSync(ch <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return msg
+	}
+}
+
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return singular
+	}
+	return plural
+}
+
+// cursorPrefix returns the cursor string and text style for a list row.
+func cursorPrefix(selected bool) (string, lipgloss.Style) {
+	if selected {
+		return cursorStyle.Render("> "), accentStyle
+	}
+	return "  ", lipgloss.NewStyle()
 }
 
 func viewableLines(height int) int {
@@ -104,7 +125,7 @@ func helpView(width, height int, bg string, fromView viewState) string {
 	}
 	b.WriteString("\n" + subtleStyle.Render("Press any key to dismiss"))
 
-	modal := modalStyle(34).Render(b.String())
+	modal := modalStyle(44).Render(b.String())
 	return placeOverlay(width, height, modal, bg)
 }
 

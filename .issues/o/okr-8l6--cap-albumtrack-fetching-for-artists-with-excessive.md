@@ -1,15 +1,15 @@
 ---
 # okr-8l6
 title: Cap album/track fetching for artists with excessive MusicBrainz results
-status: in-progress
+status: completed
 type: feature
 priority: normal
 created_at: 2026-03-13T21:44:15Z
-updated_at: 2026-03-13T21:45:31Z
+updated_at: 2026-03-21T15:49:58Z
 sync:
     github:
         issue_number: "23"
-        synced_at: "2026-03-13T22:02:29Z"
+        synced_at: "2026-03-21T16:12:06Z"
 ---
 
 ## Problem

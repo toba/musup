@@ -115,10 +115,11 @@ func (m bulkSyncModel) View(width, height int, bg string) string {
 
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Bulk Sync (%d/%d)", m.index+1, len(m.artists))) + "\n\n")
 
-	// Show last few completed results (cap at 5)
+	// Show last few completed results
+	const maxVisibleResults = 5
 	start := 0
-	if len(m.results) > 5 {
-		start = len(m.results) - 5
+	if len(m.results) > maxVisibleResults {
+		start = len(m.results) - maxVisibleResults
 	}
 	for _, r := range m.results[start:] {
 		if r.ok {

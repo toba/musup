@@ -364,23 +364,13 @@ func (m Model) View() tea.View {
 	case viewSortPicker:
 		s = m.sort.View(m.width, m.height, m.list.View())
 	case viewSyncing:
-		bg := m.bgView()
-		s = m.sync.View(m.width, m.height, bg)
+		s = m.sync.View(m.width, m.height, m.viewFor(m.prevState))
 	case viewBulkSyncing:
 		s = m.bulkSync.View(m.width, m.height, m.list.View())
 	case viewPruning:
 		s = m.prune.View(m.width, m.height, m.list.View())
 	case viewHelp:
-		var bg string
-		switch m.prevHelpState {
-		case viewDetail:
-			bg = m.detail.View()
-		case viewAlbumDetail:
-			bg = m.albumDetail.View()
-		default:
-			bg = m.list.View()
-		}
-		s = helpView(m.width, m.height, bg, m.prevHelpState)
+		s = helpView(m.width, m.height, m.viewFor(m.prevHelpState), m.prevHelpState)
 	}
 
 	return tea.NewView(s)
@@ -401,8 +391,8 @@ func (m Model) startBgSync(artist string) tea.Cmd {
 	}
 }
 
-func (m Model) bgView() string {
-	switch m.prevState {
+func (m Model) viewFor(v viewState) string {
+	switch v {
 	case viewDetail:
 		return m.detail.View()
 	case viewAlbumDetail:
