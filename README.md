@@ -83,6 +83,7 @@ The TUI has two contexts: the main artist grid and modal overlays.
 |-----|--------|
 | `↑` `↓` | Select track |
 | `enter` | Open selected track in default app (`open` on macOS, `xdg-open` on Linux) |
+| `p` | Pin modal — it stays open while you navigate the artist grid with arrow keys, updating to show each artist's discography as you move. The border turns yellow so you know it's pinned. `esc` unpins and closes. |
 | `esc` | Close modal |
 
 ### Help and confirmation modals
@@ -97,7 +98,7 @@ The TUI has two contexts: the main artist grid and modal overlays.
 
 1. **Scan** — walks the directory, reads ID3/Vorbis/MP4/ASF tags, stores metadata in SQLite. Each file is linked to an artist via integer foreign key. The `AlbumArtist` tag determines the primary artist; files with only an `Artist` tag are flagged as non-album-artist so they don't clutter the list.
 
-2. **Browse** — a three-column paginated grid shows every album artist. Followed artists get a green `✓`; unfollowed are muted. Type letters to jump to an artist, press digits to filter by release recency, or `.` to show inactive artists. Press `enter` to see what you have locally — albums and tracks in a two-column modal with release years.
+2. **Browse** — a three-column paginated grid shows every album artist. Followed artists get a green `✓`; unfollowed are muted. Type letters to jump to an artist, press digits to filter by release recency, or `.` to show inactive artists. Press `enter` to see what you have locally — albums and tracks in a two-column modal with release years. Press `p` to pin the modal and browse artists without closing it.
 
 3. **Sync** — queries MusicBrainz for each followed artist's discography and stores albums locally. Results are cached; only artists past the stale window (7 days) get re-checked. The check command (`musup N`) then compares your local files against the MB catalog and shows what's new.
 

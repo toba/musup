@@ -53,6 +53,7 @@ func buildHelpContent() string {
 		{"← →", "Move left/right"},
 		{"space", "Toggle follow"},
 		{"enter", "Show albums/tracks"},
+		{"p", "Pin discography modal"},
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
@@ -87,8 +88,12 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			Padding(1, 2)
-	modalTitleStyle = lipgloss.NewStyle().Bold(true)
-	albumStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
+	modalTitleStyle  = lipgloss.NewStyle().Bold(true)
+	pinnedModalStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("214")).
+				Padding(1, 2)
+	albumStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 )
 
 type artist struct {
@@ -120,6 +125,7 @@ type modalData struct {
 	content    string       // pre-rendered for help/confirm modals
 	tracks     []modalTrack // for discography modal
 	cursor     int
+	pinned     bool // pinned mode: modal stays open while navigating artists
 }
 
 type searchClearMsg int
@@ -250,7 +256,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetchCancel = nil
 		if msg.err != nil {
 			if !strings.Contains(msg.err.Error(), "context canceled") {
-				m.modal = &modalData{kind: modalHelp, artistName: "Error", content: fmt.Sprintf("Failed to fetch inactive data: %v", msg.err)}
+				m.modal = &modalData{kind: modalHelp, artistName: "Error", content: fmt.Sprintf("Failed to fetch inactive status: %v", msg.err)}
 			} else {
 				m.modal = nil
 			}
@@ -302,6 +308,27 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case modalDiscography:
+		if m.modal.pinned {
+			k := msg.Key()
+			if k.Code == tea.KeyEscape {
+				m.modal = nil
+				return m, nil
+			}
+			if k.Text == "c" && k.Mod.Contains(tea.ModCtrl) {
+				return m, tea.Quit
+			}
+			// Delegate all other keys to main handler.
+			model, cmd := m.handleKey(msg)
+			m = model.(Model) //nolint:errcheck // type is always Model
+			// Refresh modal for the newly selected artist.
+			if m.modal != nil && len(m.artists) > 0 {
+				a := m.artists[m.globalIndex()]
+				newModal := m.buildDiscographyModal(a)
+				newModal.pinned = true
+				m.modal = newModal
+			}
+			return m, cmd
+		}
 		switch {
 		case key.Matches(msg, keys.Up):
 			if m.modal.cursor > 0 {
@@ -316,6 +343,8 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				t := m.modal.tracks[m.modal.cursor]
 				openFile(filepath.Join(m.musicRoot, t.path))
 			}
+		case msg.Key().Text == "p":
+			m.modal.pinned = true
 		case key.Matches(msg, keys.Quit):
 			m.modal = nil
 		}
@@ -624,7 +653,7 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 	}
 }
 
-func (m Model) renderDiscographyContent(md *modalData) string {
+func (m Model) renderDiscographyContent(md *modalData, showCursor bool) string {
 	// Group tracks by album.
 	var blocks []albumBlock
 	var current albumBlock
@@ -658,7 +687,7 @@ func (m Model) renderDiscographyContent(md *modalData) string {
 		lines = append(lines, albumTitle)
 		for _, t := range b.tracks {
 			line := t.line
-			if trackIdx == md.cursor {
+			if showCursor && trackIdx == md.cursor {
 				line = selectedStyle.Render(line)
 			}
 			lines = append(lines, line)
@@ -780,10 +809,16 @@ func (m Model) View() tea.View {
 		title := modalTitleStyle.Render(m.modal.artistName)
 		switch m.modal.kind {
 		case modalDiscography:
-			body := m.renderDiscographyContent(m.modal)
-			footer := helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
-				helpKeyStyle.Render("enter") + helpStyle.Render(" open | ") +
-				helpKeyStyle.Render("esc") + helpStyle.Render(" close")
+			body := m.renderDiscographyContent(m.modal, !m.modal.pinned)
+			var footer string
+			if m.modal.pinned {
+				footer = helpKeyStyle.Render("esc") + helpStyle.Render(" close")
+			} else {
+				footer = helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
+					helpKeyStyle.Render("enter") + helpStyle.Render(" open | ") +
+					helpKeyStyle.Render("p") + helpStyle.Render(" pin | ") +
+					helpKeyStyle.Render("esc") + helpStyle.Render(" close")
+			}
 			inner = title + "\n\n" + body + "\n" + footer
 		case modalConfirmFetch:
 			content := m.modal.content
@@ -797,7 +832,11 @@ func (m Model) View() tea.View {
 			inner = title + "\n\n" + m.modal.content + "\n" + footer
 		}
 
-		box := modalStyle.MaxWidth(maxW).MaxHeight(maxH).Render(inner)
+		style := modalStyle
+		if m.modal.pinned {
+			style = pinnedModalStyle
+		}
+		box := style.MaxWidth(maxW).MaxHeight(maxH).Render(inner)
 		content = placeOverlay(m.width, m.height, box, content)
 	}
 

@@ -5,10 +5,13 @@
 ### ✨ Features
 
 - TUI for toggling followed artists; `musup <N>` keeps CLI mode ([#61](https://github.com/toba/musup/issues/61))
+- Pinnable discography modal (`p` key) ([#64](https://github.com/toba/musup/issues/64))
 
 ### 🐛 Fixes
 
 - Fetching Inactive Status modal fails to disappear after fetch completes ([#62](https://github.com/toba/musup/issues/62))
+- Discography modal shows duplicate tracks due to JOIN on albums with same `title_norm` ([#65](https://github.com/toba/musup/issues/65))
+- Pinned discography modal should not show track selection or arrow navigation ([#63](https://github.com/toba/musup/issues/63))
 
 ## Week of Mar 15 – Mar 21, 2026
 

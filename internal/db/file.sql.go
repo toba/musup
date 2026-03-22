@@ -79,7 +79,11 @@ const artistLocalTracks = `-- name: ArtistLocalTracks :many
 SELECT f.path, f.album, f.track_number, f.title,
        CAST(COALESCE(al.release_date, '') AS TEXT) AS release_date
 FROM files f
-LEFT JOIN albums al ON al.artist_id = f.artist_id AND al.title_norm = f.album_norm
+LEFT JOIN (
+    SELECT artist_id, title_norm, MIN(release_date) AS release_date
+    FROM albums
+    GROUP BY artist_id, title_norm
+) al ON al.artist_id = f.artist_id AND al.title_norm = f.album_norm
 WHERE f.artist_id = ? AND f.album != ''
 ORDER BY f.album COLLATE NOCASE, f.track_number, f.title COLLATE NOCASE
 `

@@ -807,3 +807,34 @@ func TestSetFollowed(t *testing.T) {
 		t.Fatalf("expected followed=1 after re-follow, got %d", artists[0].Followed)
 	}
 }
+
+func TestArtistLocalTracks_NoDuplicatesFromMultipleAlbums(t *testing.T) {
+	db := openTestDB(t)
+	artistID := ensureArtist(t, db, "Alanis Morissette")
+
+	// Insert a file with album "Jagged Little Pill".
+	fp := testFileParams("a/track1.flac", "Alanis Morissette", "Jagged Little Pill", "All I Really Want",
+		func(p *UpsertFileParams) { p.TrackNumber = 1; p.ArtistID = artistID })
+	if err := db.Q.UpsertFile(bg, fp); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Insert multiple albums that normalize to the same title_norm.
+	albumNorm := Normalize("Jagged Little Pill")
+	for _, title := range []string{"Jagged Little Pill", "Jagged Little Pill (acoustic)", "Jagged Little Pill (Original Broadway Cast Recording)"} {
+		testUpsertAlbum(t, db, artistID, UpsertAlbumParams{
+			Title: title, TitleNorm: albumNorm, ReleaseDate: "1995-06-09",
+		})
+	}
+
+	rows, err := db.Q.ArtistLocalTracks(bg, artistID)
+	if err != nil {
+		t.Fatalf("ArtistLocalTracks: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 track, got %d (duplicate rows from JOIN)", len(rows))
+	}
+	if rows[0].Title != "All I Really Want" {
+		t.Fatalf("unexpected title: %s", rows[0].Title)
+	}
+}
