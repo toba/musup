@@ -19,7 +19,7 @@ var scanCmd = &cobra.Command{
 			root = args[0]
 		}
 
-		d, err := openDB()
+		d, _, err := openDB()
 		if err != nil {
 			return err
 		}

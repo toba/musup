@@ -132,6 +132,14 @@ func Scan(ctx context.Context, d *db.DB, root string) error {
 	}
 
 	for _, r := range results {
+		var artistID int64
+		if r.artist != "" {
+			id, err := d.EnsureArtist(r.artist)
+			if err != nil {
+				return fmt.Errorf("ensure artist %q: %w", r.artist, err)
+			}
+			artistID = id
+		}
 		if err := d.Q.UpsertFile(context.Background(), db.UpsertFileParams{
 			Path:          r.cf.relPath,
 			Size:          r.cf.size,
@@ -142,6 +150,7 @@ func Scan(ctx context.Context, d *db.DB, root string) error {
 			TitleNorm:     db.Normalize(r.title),
 			AlbumNorm:     db.Normalize(r.album),
 			ArtistNorm:    db.Normalize(r.artist),
+			ArtistID:      artistID,
 			TrackNumber:   int64(r.trackNo),
 			IsAlbumArtist: int64(db.BoolToInt(r.isAlbumArtist)),
 			ScannedAt:     time.Now().Format(time.RFC3339),

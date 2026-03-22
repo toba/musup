@@ -15,3 +15,22 @@ WHERE id = ?;
 
 -- name: MarkArtistNotFound :exec
 UPDATE artists SET not_found = 1 WHERE id = ?;
+
+-- name: AlbumArtists :many
+-- All album artists with their followed status, for the TUI.
+SELECT ar.id, ar.name, ar.followed
+FROM artists ar
+WHERE ar.id IN (
+    SELECT artist_id FROM files
+    WHERE artist != '' AND album != '' AND artist_id != 0
+    GROUP BY artist_id
+    HAVING MAX(is_album_artist) = 1
+)
+ORDER BY ar.name COLLATE NOCASE;
+
+-- name: GetArtistByID :one
+SELECT id, name, name_norm, mbid, last_checked_at, not_found
+FROM artists WHERE id = ?;
+
+-- name: SetFollowed :exec
+UPDATE artists SET followed = ? WHERE id = ?;

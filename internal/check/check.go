@@ -29,40 +29,33 @@ type Progress struct {
 // haven't been checked recently. staleAfter controls how old a check can
 // be before re-syncing (0 means never re-check).
 func SyncAll(ctx context.Context, d *db.DB, mb *musicbrainz.Client, staleAfter time.Duration, onProgress func(Progress)) error {
-	norms, err := d.Q.DistinctArtistNorms(ctx)
+	artistIDs, err := d.Q.DistinctArtistIDs(ctx)
 	if err != nil {
 		return fmt.Errorf("list artists: %w", err)
 	}
 
 	// Build a list of artists that need checking.
 	type artistWork struct {
-		norm string
-		name string
 		id   int64
+		name string
 	}
 	var work []artistWork
 
-	for _, norm := range norms {
-		row, err := d.Q.GetArtistByNameNorm(ctx, norm)
+	for _, id := range artistIDs {
+		row, err := d.Q.GetArtistByID(ctx, id)
 		if err != nil {
-			// No artist record yet — needs checking.
-			work = append(work, artistWork{norm: norm})
 			continue
 		}
 		if row.NotFound != 0 {
 			continue
 		}
-		if row.Mbid == "" {
-			work = append(work, artistWork{norm: norm, name: row.Name, id: row.ID})
-			continue
-		}
-		if staleAfter > 0 && row.LastCheckedAt != "" {
+		if row.Mbid != "" && staleAfter > 0 && row.LastCheckedAt != "" {
 			checked, parseErr := time.Parse(time.RFC3339, row.LastCheckedAt)
 			if parseErr == nil && time.Since(checked) < staleAfter {
 				continue
 			}
 		}
-		work = append(work, artistWork{norm: norm, name: row.Name, id: row.ID})
+		work = append(work, artistWork{id: row.ID, name: row.Name})
 	}
 
 	for i, w := range work {
@@ -70,18 +63,11 @@ func SyncAll(ctx context.Context, d *db.DB, mb *musicbrainz.Client, staleAfter t
 			return ctx.Err()
 		}
 
-		// Resolve display name if we don't have one yet.
-		name := w.name
-		if name == "" {
-			name = w.norm // fallback
-		}
-
 		if onProgress != nil {
-			onProgress(Progress{Current: i + 1, Total: len(work), Artist: name})
+			onProgress(Progress{Current: i + 1, Total: len(work), Artist: w.name})
 		}
 
-		if err := syncArtist(ctx, d, mb, w.norm); err != nil {
-			// Log but continue — don't abort the whole sync for one artist.
+		if err := syncArtist(ctx, d, mb, w.id); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -92,14 +78,8 @@ func SyncAll(ctx context.Context, d *db.DB, mb *musicbrainz.Client, staleAfter t
 	return nil
 }
 
-func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistNorm string) error {
-	// Find display name from files.
-	artistID, err := d.EnsureArtist(artistNorm)
-	if err != nil {
-		return fmt.Errorf("ensure artist: %w", err)
-	}
-
-	row, err := d.Q.GetArtistByNameNorm(ctx, artistNorm)
+func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID int64) error {
+	row, err := d.Q.GetArtistByID(ctx, artistID)
 	if err != nil {
 		return fmt.Errorf("get artist: %w", err)
 	}

@@ -1,5 +1,11 @@
 # Changelog
 
+## Week of Mar 22 – Mar 28, 2026
+
+### ✨ Features
+
+- TUI for toggling followed artists; `musup <N>` keeps CLI mode ([#61](https://github.com/toba/musup/issues/61))
+
 ## Week of Mar 15 – Mar 21, 2026
 
 ### ✨ Features

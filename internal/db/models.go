@@ -22,6 +22,7 @@ type Artist struct {
 	Mbid          string
 	LastCheckedAt string
 	NotFound      int64
+	Followed      int64
 }
 
 type File struct {
@@ -30,6 +31,7 @@ type File struct {
 	ModTime       string
 	Artist        string
 	ArtistNorm    string
+	ArtistID      int64
 	Album         string
 	AlbumNorm     string
 	Title         string

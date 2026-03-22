@@ -254,6 +254,34 @@ func (d *DB) migrate() error {
 		version = 13
 	}
 
+	// Version 13 → 14: re-add followed flag to artists (default 1 = followed)
+	if version < 14 {
+		if err := d.addColumnIfMissing("artists", "followed", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+			return err
+		}
+		version = 14
+	}
+
+	// Version 14 → 15: add artist_id FK to files
+	if version < 15 {
+		if err := d.addColumnIfMissing("files", "artist_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec(`
+			UPDATE files SET artist_id = (
+				SELECT id FROM artists WHERE name_norm = files.artist_norm
+			) WHERE artist_norm != '' AND EXISTS (
+				SELECT 1 FROM artists WHERE name_norm = files.artist_norm
+			)
+		`); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec("CREATE INDEX IF NOT EXISTS idx_files_artist_id ON files(artist_id)"); err != nil {
+			return err
+		}
+		version = 15
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }

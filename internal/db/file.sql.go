@@ -75,6 +75,48 @@ func (q *Queries) AllFilePaths(ctx context.Context) ([]string, error) {
 	return items, nil
 }
 
+const artistLocalTracks = `-- name: ArtistLocalTracks :many
+SELECT path, album, track_number, title
+FROM files
+WHERE artist_id = ? AND album != ''
+ORDER BY album COLLATE NOCASE, track_number, title COLLATE NOCASE
+`
+
+type ArtistLocalTracksRow struct {
+	Path        string
+	Album       string
+	TrackNumber int64
+	Title       string
+}
+
+func (q *Queries) ArtistLocalTracks(ctx context.Context, artistID int64) ([]ArtistLocalTracksRow, error) {
+	rows, err := q.db.QueryContext(ctx, artistLocalTracks, artistID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ArtistLocalTracksRow
+	for rows.Next() {
+		var i ArtistLocalTracksRow
+		if err := rows.Scan(
+			&i.Path,
+			&i.Album,
+			&i.TrackNumber,
+			&i.Title,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const deleteFileByPath = `-- name: DeleteFileByPath :exec
 DELETE FROM files WHERE path = ?
 `
@@ -84,24 +126,24 @@ func (q *Queries) DeleteFileByPath(ctx context.Context, path string) error {
 	return err
 }
 
-const distinctArtistNorms = `-- name: DistinctArtistNorms :many
-SELECT DISTINCT artist_norm FROM files
-WHERE artist != '' AND is_album_artist = 1 AND artist_norm != ''
+const distinctArtistIDs = `-- name: DistinctArtistIDs :many
+SELECT DISTINCT artist_id FROM files
+WHERE artist != '' AND is_album_artist = 1 AND artist_id != 0
 `
 
-func (q *Queries) DistinctArtistNorms(ctx context.Context) ([]string, error) {
-	rows, err := q.db.QueryContext(ctx, distinctArtistNorms)
+func (q *Queries) DistinctArtistIDs(ctx context.Context) ([]int64, error) {
+	rows, err := q.db.QueryContext(ctx, distinctArtistIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []string
+	var items []int64
 	for rows.Next() {
-		var artist_norm string
-		if err := rows.Scan(&artist_norm); err != nil {
+		var artist_id int64
+		if err := rows.Scan(&artist_id); err != nil {
 			return nil, err
 		}
-		items = append(items, artist_norm)
+		items = append(items, artist_id)
 	}
 	if err := rows.Close(); err != nil {
 		return nil, err
@@ -113,8 +155,8 @@ func (q *Queries) DistinctArtistNorms(ctx context.Context) ([]string, error) {
 }
 
 const upsertFile = `-- name: UpsertFile :exec
-INSERT INTO files (path, size, mod_time, artist, album, title, track_number, is_album_artist, scanned_at, title_norm, album_norm, artist_norm)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO files (path, size, mod_time, artist, album, title, track_number, is_album_artist, scanned_at, title_norm, album_norm, artist_norm, artist_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
     size            = excluded.size,
     mod_time        = excluded.mod_time,
@@ -126,7 +168,8 @@ ON CONFLICT(path) DO UPDATE SET
     scanned_at      = excluded.scanned_at,
     title_norm      = excluded.title_norm,
     album_norm      = excluded.album_norm,
-    artist_norm     = excluded.artist_norm
+    artist_norm     = excluded.artist_norm,
+    artist_id       = excluded.artist_id
 `
 
 type UpsertFileParams struct {
@@ -142,6 +185,7 @@ type UpsertFileParams struct {
 	TitleNorm     string
 	AlbumNorm     string
 	ArtistNorm    string
+	ArtistID      int64
 }
 
 func (q *Queries) UpsertFile(ctx context.Context, arg UpsertFileParams) error {
@@ -158,6 +202,7 @@ func (q *Queries) UpsertFile(ctx context.Context, arg UpsertFileParams) error {
 		arg.TitleNorm,
 		arg.AlbumNorm,
 		arg.ArtistNorm,
+		arg.ArtistID,
 	)
 	return err
 }

@@ -1,6 +1,6 @@
 -- name: UpsertFile :exec
-INSERT INTO files (path, size, mod_time, artist, album, title, track_number, is_album_artist, scanned_at, title_norm, album_norm, artist_norm)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO files (path, size, mod_time, artist, album, title, track_number, is_album_artist, scanned_at, title_norm, album_norm, artist_norm, artist_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(path) DO UPDATE SET
     size            = excluded.size,
     mod_time        = excluded.mod_time,
@@ -12,7 +12,8 @@ ON CONFLICT(path) DO UPDATE SET
     scanned_at      = excluded.scanned_at,
     title_norm      = excluded.title_norm,
     album_norm      = excluded.album_norm,
-    artist_norm     = excluded.artist_norm;
+    artist_norm     = excluded.artist_norm,
+    artist_id       = excluded.artist_id;
 
 -- name: AllFileMeta :many
 SELECT path, size, mod_time, title FROM files;
@@ -23,6 +24,12 @@ SELECT path FROM files;
 -- name: DeleteFileByPath :exec
 DELETE FROM files WHERE path = ?;
 
--- name: DistinctArtistNorms :many
-SELECT DISTINCT artist_norm FROM files
-WHERE artist != '' AND is_album_artist = 1 AND artist_norm != '';
+-- name: DistinctArtistIDs :many
+SELECT DISTINCT artist_id FROM files
+WHERE artist != '' AND is_album_artist = 1 AND artist_id != 0;
+
+-- name: ArtistLocalTracks :many
+SELECT path, album, track_number, title
+FROM files
+WHERE artist_id = ? AND album != ''
+ORDER BY album COLLATE NOCASE, track_number, title COLLATE NOCASE;

@@ -9,6 +9,76 @@ import (
 	"context"
 )
 
+const albumArtists = `-- name: AlbumArtists :many
+SELECT ar.id, ar.name, ar.followed
+FROM artists ar
+WHERE ar.id IN (
+    SELECT artist_id FROM files
+    WHERE artist != '' AND album != '' AND artist_id != 0
+    GROUP BY artist_id
+    HAVING MAX(is_album_artist) = 1
+)
+ORDER BY ar.name COLLATE NOCASE
+`
+
+type AlbumArtistsRow struct {
+	ID       int64
+	Name     string
+	Followed int64
+}
+
+// All album artists with their followed status, for the TUI.
+func (q *Queries) AlbumArtists(ctx context.Context) ([]AlbumArtistsRow, error) {
+	rows, err := q.db.QueryContext(ctx, albumArtists)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AlbumArtistsRow
+	for rows.Next() {
+		var i AlbumArtistsRow
+		if err := rows.Scan(&i.ID, &i.Name, &i.Followed); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const getArtistByID = `-- name: GetArtistByID :one
+SELECT id, name, name_norm, mbid, last_checked_at, not_found
+FROM artists WHERE id = ?
+`
+
+type GetArtistByIDRow struct {
+	ID            int64
+	Name          string
+	NameNorm      string
+	Mbid          string
+	LastCheckedAt string
+	NotFound      int64
+}
+
+func (q *Queries) GetArtistByID(ctx context.Context, id int64) (GetArtistByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, getArtistByID, id)
+	var i GetArtistByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.NameNorm,
+		&i.Mbid,
+		&i.LastCheckedAt,
+		&i.NotFound,
+	)
+	return i, err
+}
+
 const getArtistByNameNorm = `-- name: GetArtistByNameNorm :one
 SELECT id, name, mbid, last_checked_at, not_found
 FROM artists WHERE name_norm = ?
@@ -53,6 +123,15 @@ UPDATE artists SET not_found = 1 WHERE id = ?
 
 func (q *Queries) MarkArtistNotFound(ctx context.Context, id int64) error {
 	_, err := q.db.ExecContext(ctx, markArtistNotFound, id)
+	return err
+}
+
+const setFollowed = `-- name: SetFollowed :exec
+UPDATE artists SET followed = ? WHERE id = ?
+`
+
+func (q *Queries) SetFollowed(ctx context.Context, followed int64, iD int64) error {
+	_, err := q.db.ExecContext(ctx, setFollowed, followed, iD)
 	return err
 }
 

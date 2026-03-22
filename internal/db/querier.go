@@ -9,15 +9,20 @@ import (
 )
 
 type Querier interface {
+	// All album artists with their followed status, for the TUI.
+	AlbumArtists(ctx context.Context) ([]AlbumArtistsRow, error)
 	AllFileMeta(ctx context.Context) ([]AllFileMetaRow, error)
 	AllFilePaths(ctx context.Context) ([]string, error)
+	ArtistLocalTracks(ctx context.Context, artistID int64) ([]ArtistLocalTracksRow, error)
 	DeleteFileByPath(ctx context.Context, path string) error
-	DistinctArtistNorms(ctx context.Context) ([]string, error)
+	DistinctArtistIDs(ctx context.Context) ([]int64, error)
+	GetArtistByID(ctx context.Context, id int64) (GetArtistByIDRow, error)
 	GetArtistByNameNorm(ctx context.Context, nameNorm string) (GetArtistByNameNormRow, error)
 	InsertArtist(ctx context.Context, name string, nameNorm string) (int64, error)
 	MarkArtistNotFound(ctx context.Context, id int64) error
 	// Artists with MB albums released since cutoff that aren't in local files.
 	NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error)
+	SetFollowed(ctx context.Context, followed int64, iD int64) error
 	UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error
 	UpdateArtistMeta(ctx context.Context, mbid string, lastCheckedAt string, iD int64) error
 	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) error

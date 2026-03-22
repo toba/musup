@@ -142,14 +142,18 @@ func TestAllFileMeta_MultipleFiles(t *testing.T) {
 	}
 }
 
-func TestDistinctArtistNorms(t *testing.T) {
+func TestDistinctArtistIDs(t *testing.T) {
 	db := openTestDB(t)
 
+	zedID := ensureArtist(t, db, "Zed")
+	alphaID := ensureArtist(t, db, "Alpha")
+	guestID := ensureArtist(t, db, "Guest")
+
 	files := []UpsertFileParams{
-		testFileParams("a/1.flac", "Zed", "Z", ""),
-		testFileParams("b/2.flac", "Alpha", "A", ""),
-		testFileParams("c/3.flac", "Alpha", "B", ""),
-		testFileParams("d/4.flac", "Guest", "", "", func(f *UpsertFileParams) { f.IsAlbumArtist = 0 }),
+		testFileParams("a/1.flac", "Zed", "Z", "", func(f *UpsertFileParams) { f.ArtistID = zedID }),
+		testFileParams("b/2.flac", "Alpha", "A", "", func(f *UpsertFileParams) { f.ArtistID = alphaID }),
+		testFileParams("c/3.flac", "Alpha", "B", "", func(f *UpsertFileParams) { f.ArtistID = alphaID }),
+		testFileParams("d/4.flac", "Guest", "", "", func(f *UpsertFileParams) { f.IsAlbumArtist = 0; f.ArtistID = guestID }),
 	}
 	for _, f := range files {
 		if err := db.Q.UpsertFile(bg, f); err != nil {
@@ -157,12 +161,12 @@ func TestDistinctArtistNorms(t *testing.T) {
 		}
 	}
 
-	norms, err := db.Q.DistinctArtistNorms(bg)
+	ids, err := db.Q.DistinctArtistIDs(bg)
 	if err != nil {
-		t.Fatalf("DistinctArtistNorms: %v", err)
+		t.Fatalf("DistinctArtistIDs: %v", err)
 	}
-	if len(norms) != 2 {
-		t.Fatalf("expected 2 artist norms, got %d: %v", len(norms), norms)
+	if len(ids) != 2 {
+		t.Fatalf("expected 2 artist IDs, got %d: %v", len(ids), ids)
 	}
 }
 
@@ -386,8 +390,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 13 {
-		t.Fatalf("expected user_version 13, got %d", version)
+	if version != 15 {
+		t.Fatalf("expected user_version 15, got %d", version)
 	}
 }
 
@@ -412,18 +416,22 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 13 {
-		t.Fatalf("expected user_version 13, got %d", version)
+	if version != 15 {
+		t.Fatalf("expected user_version 15, got %d", version)
 	}
 }
 
 func TestRemoveStaleFiles(t *testing.T) {
 	db := openTestDB(t)
 
+	aID := ensureArtist(t, db, "A")
+	bID := ensureArtist(t, db, "B")
+	cID := ensureArtist(t, db, "C")
+
 	files := []UpsertFileParams{
-		testFileParams("a/1.flac", "A", "X", ""),
-		testFileParams("b/2.flac", "B", "Y", ""),
-		testFileParams("c/3.flac", "C", "Z", ""),
+		testFileParams("a/1.flac", "A", "X", "", func(p *UpsertFileParams) { p.ArtistID = aID }),
+		testFileParams("b/2.flac", "B", "Y", "", func(p *UpsertFileParams) { p.ArtistID = bID }),
+		testFileParams("c/3.flac", "C", "Z", "", func(p *UpsertFileParams) { p.ArtistID = cID }),
 	}
 	for _, f := range files {
 		if err := db.Q.UpsertFile(bg, f); err != nil {
@@ -443,12 +451,12 @@ func TestRemoveStaleFiles(t *testing.T) {
 		t.Fatalf("expected 2 removed, got %d", removed)
 	}
 
-	norms, err := db.Q.DistinctArtistNorms(bg)
+	ids, err := db.Q.DistinctArtistIDs(bg)
 	if err != nil {
-		t.Fatalf("DistinctArtistNorms: %v", err)
+		t.Fatalf("DistinctArtistIDs: %v", err)
 	}
-	if len(norms) != 1 {
-		t.Fatalf("expected 1 artist norm, got %d: %v", len(norms), norms)
+	if len(ids) != 1 {
+		t.Fatalf("expected 1 artist ID, got %d: %v", len(ids), ids)
 	}
 }
 
@@ -620,8 +628,8 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 13 {
-		t.Fatalf("expected version 13, got %d", version)
+	if version != 15 {
+		t.Fatalf("expected version 15, got %d", version)
 	}
 
 	var artistCount int
@@ -656,10 +664,13 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 func TestNewerReleases(t *testing.T) {
 	db := openTestDB(t)
 
+	rhID := ensureArtist(t, db, "Radiohead")
+	beckID := ensureArtist(t, db, "Beck")
+
 	// Set up local files for two artists.
 	for _, f := range []UpsertFileParams{
-		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag"),
-		testFileParams("b/1.flac", "Beck", "Mellow Gold", "Loser"),
+		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = rhID }),
+		testFileParams("b/1.flac", "Beck", "Mellow Gold", "Loser", func(p *UpsertFileParams) { p.ArtistID = beckID }),
 	} {
 		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
@@ -667,15 +678,12 @@ func TestNewerReleases(t *testing.T) {
 	}
 
 	// Set up MB data: Radiohead has a newer album, Beck does not.
-	rhID := ensureArtist(t, db, "Radiohead")
 	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
 		Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album",
 	})
 	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
 		Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album",
 	})
-
-	beckID := ensureArtist(t, db, "Beck")
 	testUpsertAlbum(t, db, beckID, UpsertAlbumParams{
 		Title: "Mellow Gold", Mbid: "ccc", ReleaseDate: "1994-03-01", PrimaryType: "Album",
 	})
@@ -700,17 +708,18 @@ func TestNewerReleases(t *testing.T) {
 func TestNewerReleases_ExcludesLocalAlbums(t *testing.T) {
 	db := openTestDB(t)
 
+	rhID := ensureArtist(t, db, "Radiohead")
+
 	// User has "A Moon Shaped Pool" locally.
 	for _, f := range []UpsertFileParams{
-		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag"),
-		testFileParams("a/2.flac", "Radiohead", "A Moon Shaped Pool", "Burn the Witch"),
+		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = rhID }),
+		testFileParams("a/2.flac", "Radiohead", "A Moon Shaped Pool", "Burn the Witch", func(p *UpsertFileParams) { p.ArtistID = rhID }),
 	} {
 		if err := db.Q.UpsertFile(bg, f); err != nil {
 			t.Fatalf("UpsertFile: %v", err)
 		}
 	}
 
-	rhID := ensureArtist(t, db, "Radiohead")
 	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
 		Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album",
 	})
@@ -724,5 +733,77 @@ func TestNewerReleases_ExcludesLocalAlbums(t *testing.T) {
 	}
 	if len(releases) != 0 {
 		t.Fatalf("expected 0 releases (user already has it), got %d", len(releases))
+	}
+}
+
+func TestAlbumArtists(t *testing.T) {
+	db := openTestDB(t)
+
+	rhID := ensureArtist(t, db, "Radiohead")
+	beckID := ensureArtist(t, db, "Beck")
+	guestID := ensureArtist(t, db, "Guest")
+
+	for _, f := range []UpsertFileParams{
+		testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = rhID }),
+		testFileParams("b/1.flac", "Beck", "Mellow Gold", "Loser", func(p *UpsertFileParams) { p.ArtistID = beckID }),
+		testFileParams("c/1.flac", "Guest", "Various", "Track", func(p *UpsertFileParams) { p.IsAlbumArtist = 0; p.ArtistID = guestID }),
+	} {
+		if err := db.Q.UpsertFile(bg, f); err != nil {
+			t.Fatalf("UpsertFile: %v", err)
+		}
+	}
+
+	artists, err := db.Q.AlbumArtists(bg)
+	if err != nil {
+		t.Fatalf("AlbumArtists: %v", err)
+	}
+	if len(artists) != 2 {
+		t.Fatalf("expected 2 album artists, got %d", len(artists))
+	}
+	if artists[0].Name != "Beck" {
+		t.Errorf("expected first artist Beck, got %q", artists[0].Name)
+	}
+	if artists[1].Name != "Radiohead" {
+		t.Errorf("expected second artist Radiohead, got %q", artists[1].Name)
+	}
+	if artists[0].Followed != 1 {
+		t.Errorf("expected Beck followed=1, got %d", artists[0].Followed)
+	}
+}
+
+func TestSetFollowed(t *testing.T) {
+	db := openTestDB(t)
+
+	id := ensureArtist(t, db, "Radiohead")
+	if err := db.Q.UpsertFile(bg, testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = id })); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	// Unfollow.
+	if err := db.Q.SetFollowed(bg, 0, id); err != nil {
+		t.Fatalf("SetFollowed(0): %v", err)
+	}
+
+	artists, err := db.Q.AlbumArtists(bg)
+	if err != nil {
+		t.Fatalf("AlbumArtists: %v", err)
+	}
+	if len(artists) != 1 {
+		t.Fatalf("expected 1 artist, got %d", len(artists))
+	}
+	if artists[0].Followed != 0 {
+		t.Fatalf("expected followed=0 after unfollow, got %d", artists[0].Followed)
+	}
+
+	// Re-follow.
+	if err := db.Q.SetFollowed(bg, 1, id); err != nil {
+		t.Fatalf("SetFollowed(1): %v", err)
+	}
+	artists, err = db.Q.AlbumArtists(bg)
+	if err != nil {
+		t.Fatalf("AlbumArtists: %v", err)
+	}
+	if artists[0].Followed != 1 {
+		t.Fatalf("expected followed=1 after re-follow, got %d", artists[0].Followed)
 	}
 }
