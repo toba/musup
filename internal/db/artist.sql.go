@@ -19,7 +19,12 @@ WHERE ar.id IN (
     GROUP BY artist_id
     HAVING MAX(is_album_artist) = 1
 )
-ORDER BY ar.name COLLATE NOCASE
+ORDER BY
+  CASE
+    WHEN ar.name LIKE 'The %' THEN SUBSTR(ar.name, 5)
+    WHEN ar.name LIKE 'A %'   THEN SUBSTR(ar.name, 3)
+    ELSE ar.name
+  END COLLATE NOCASE
 `
 
 type AlbumArtistsRow struct {

@@ -6,12 +6,22 @@
 
 - TUI for toggling followed artists; `musup <N>` keeps CLI mode ([#61](https://github.com/toba/musup/issues/61))
 - Pinnable discography modal (`p` key) ([#64](https://github.com/toba/musup/issues/64))
+- Shift+Up/Down to jump to next followed artist ([#69](https://github.com/toba/musup/issues/69))
+- Add `*` shortcut for new releases check in TUI ([#66](https://github.com/toba/musup/issues/66))
 
 ### 🐛 Fixes
 
 - Fetching Inactive Status modal fails to disappear after fetch completes ([#62](https://github.com/toba/musup/issues/62))
 - Discography modal shows duplicate tracks due to JOIN on albums with same `title_norm` ([#65](https://github.com/toba/musup/issues/65))
 - Pinned discography modal should not show track selection or arrow navigation ([#63](https://github.com/toba/musup/issues/63))
+- Truncate long track names in discography modal with ellipsis ([#68](https://github.com/toba/musup/issues/68))
+- Use marker instead of reverse-video for selected artist in grid ([#72](https://github.com/toba/musup/issues/72))
+- Fix `musup N` to only show albums newer than latest local ([#71](https://github.com/toba/musup/issues/71))
+
+### 🗜️ Tweaks
+
+- Debounce pinned modal refresh ([#67](https://github.com/toba/musup/issues/67))
+- Style discography modal title to match artist list ([#70](https://github.com/toba/musup/issues/70))
 
 ## Week of Mar 15 – Mar 21, 2026
 

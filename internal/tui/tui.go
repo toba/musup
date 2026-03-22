@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -24,6 +25,8 @@ type keyMap struct {
 	Down           key.Binding
 	Left           key.Binding
 	Right          key.Binding
+	NextFollowed   key.Binding
+	PrevFollowed   key.Binding
 	Toggle         key.Binding
 	NextPage       key.Binding
 	PrevPage       key.Binding
@@ -38,6 +41,8 @@ var keys = keyMap{
 	Down:           key.NewBinding(key.WithKeys("down")),
 	Left:           key.NewBinding(key.WithKeys("left")),
 	Right:          key.NewBinding(key.WithKeys("right")),
+	NextFollowed:   key.NewBinding(key.WithKeys("shift+down")),
+	PrevFollowed:   key.NewBinding(key.WithKeys("shift+up")),
 	Toggle:         key.NewBinding(key.WithKeys("space")),
 	NextPage:       key.NewBinding(key.WithKeys("pgdown")),
 	PrevPage:       key.NewBinding(key.WithKeys("pgup")),
@@ -50,6 +55,7 @@ var keys = keyMap{
 func buildHelpContent() string {
 	entries := [][2]string{
 		{"↑ ↓", "Move up/down"},
+		{"⇧↑ ⇧↓", "Jump to followed"},
 		{"← →", "Move left/right"},
 		{"space", "Toggle follow"},
 		{"enter", "Show albums/tracks"},
@@ -57,6 +63,7 @@ func buildHelpContent() string {
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
+		{"*", "Check for new releases"},
 		{".", "Show inactive artists"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
@@ -93,7 +100,8 @@ var (
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(lipgloss.Color("214")).
 				Padding(1, 2)
-	albumStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
+	albumStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
+	newReleaseStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
 
 type artist struct {
@@ -117,11 +125,13 @@ const (
 	modalHelp modalKind = iota
 	modalDiscography
 	modalConfirmFetch
+	modalNewReleases
 )
 
 type modalData struct {
 	kind       modalKind
 	artistName string
+	followed   bool
 	content    string       // pre-rendered for help/confirm modals
 	tracks     []modalTrack // for discography modal
 	cursor     int
@@ -130,6 +140,7 @@ type modalData struct {
 
 type searchClearMsg int
 type yearInputMsg int
+type pinnedRefreshMsg int
 
 // FetchInactiveFunc queries MusicBrainz for each artist's inactive status.
 // It should call onProgress for each artist processed and check ctx for cancellation.
@@ -158,28 +169,31 @@ type inactiveDataMsg struct {
 }
 
 type Model struct {
-	allArtists     []artist // full list from DB
-	artists        []artist // currently visible (filtered)
-	cursor         int      // page-relative index
-	cols           int
-	db             *db.DB
-	musicRoot      string
-	fetchInactive  FetchInactiveFunc
-	fetchCancel    context.CancelFunc
-	fetchProgress  *fetchState
-	paginator      paginator.Model
-	modal          *modalData
-	spinner        spinner.Model
-	search         string
-	searchGen      int
-	filterInactive bool
-	yearInput      string
-	yearInputGen   int
-	filterYears    int
-	fetching       bool
-	width          int
-	height         int
-	err            error
+	allArtists      []artist // full list from DB
+	artists         []artist // currently visible (filtered)
+	cursor          int      // page-relative index
+	cols            int
+	db              *db.DB
+	musicRoot       string
+	fetchInactive   FetchInactiveFunc
+	fetchCancel     context.CancelFunc
+	fetchProgress   *fetchState
+	paginator       paginator.Model
+	modal           *modalData
+	spinner         spinner.Model
+	search          string
+	searchGen       int
+	filterInactive  bool
+	yearInput       string
+	yearInputGen    int
+	pinnedGen       int
+	filterYears     int
+	newReleases     map[int64][]db.FollowedNewerReleasesRow
+	newReleasesMode bool
+	fetching        bool
+	width           int
+	height          int
+	err             error
 }
 
 func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc) Model {
@@ -209,10 +223,20 @@ func (m Model) loadArtists() tea.Msg {
 	for i, r := range rows {
 		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1, latestRelease: r.LatestRelease}
 	}
-	return artistsMsg(artists)
+	var nr map[int64][]db.FollowedNewerReleasesRow
+	if nrRows, nrErr := m.db.Q.FollowedNewerReleases(context.Background()); nrErr == nil && len(nrRows) > 0 {
+		nr = make(map[int64][]db.FollowedNewerReleasesRow)
+		for _, r := range nrRows {
+			nr[r.ArtistID] = append(nr[r.ArtistID], r)
+		}
+	}
+	return artistsMsg{artists: artists, newReleases: nr}
 }
 
-type artistsMsg []artist
+type artistsMsg struct {
+	artists     []artist
+	newReleases map[int64][]db.FollowedNewerReleasesRow
+}
 type errMsg struct{ err error }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -222,7 +246,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.updatePagination()
 	case artistsMsg:
-		m.allArtists = []artist(msg)
+		m.allArtists = msg.artists
+		m.newReleases = msg.newReleases
 		m.applyFilter()
 		m.cursor = 0
 		m.updatePagination()
@@ -244,6 +269,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updatePagination()
 			}
 			m.yearInput = ""
+		}
+	case pinnedRefreshMsg:
+		if m.modal != nil && m.modal.pinned && int(msg) == m.pinnedGen && len(m.artists) > 0 {
+			a := m.artists[m.globalIndex()]
+			newModal := m.buildDiscographyModal(a)
+			newModal.pinned = true
+			m.modal = newModal
 		}
 	case spinner.TickMsg:
 		if m.fetching {
@@ -287,6 +319,25 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case modalHelp:
 		m.modal = nil
 
+	case modalNewReleases:
+		switch {
+		case key.Matches(msg, keys.Up):
+			if m.modal.cursor > 0 {
+				m.modal.cursor--
+			}
+		case key.Matches(msg, keys.Down):
+			if m.modal.cursor < len(m.modal.tracks)-1 {
+				m.modal.cursor++
+			}
+		case key.Matches(msg, keys.Detail):
+			if len(m.modal.tracks) > 0 {
+				t := m.modal.tracks[m.modal.cursor]
+				searchWeb(fmt.Sprintf("%q %s", m.modal.artistName, t.album))
+			}
+		case key.Matches(msg, keys.Quit):
+			m.modal = nil
+		}
+
 	case modalConfirmFetch:
 		if m.fetching {
 			if key.Matches(msg, keys.Quit) && m.fetchCancel != nil {
@@ -320,12 +371,16 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// Delegate all other keys to main handler.
 			model, cmd := m.handleKey(msg)
 			m = model.(Model) //nolint:errcheck // type is always Model
-			// Refresh modal for the newly selected artist.
+			// Debounce modal refresh: update title immediately, rebuild content after a short delay.
 			if m.modal != nil && len(m.artists) > 0 {
 				a := m.artists[m.globalIndex()]
-				newModal := m.buildDiscographyModal(a)
-				newModal.pinned = true
-				m.modal = newModal
+				m.modal.artistName = a.name
+				m.modal.followed = a.followed
+				m.pinnedGen++
+				gen := m.pinnedGen
+				cmd = tea.Batch(cmd, tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+					return pinnedRefreshMsg(gen)
+				}))
 			}
 			return m, cmd
 		}
@@ -365,6 +420,11 @@ func openFile(path string) {
 	_ = cmd.Start()
 }
 
+func searchWeb(query string) {
+	u := "https://www.google.com/search?q=" + url.QueryEscape(query)
+	openFile(u)
+}
+
 func (m *Model) startFetch() tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated esc
 	m.fetchCancel = cancel
@@ -383,6 +443,17 @@ func (m *Model) startFetch() tea.Cmd {
 
 func (m *Model) applyFilter() {
 	source := m.allArtists
+
+	if m.newReleasesMode && m.newReleases != nil {
+		var filtered []artist
+		for _, a := range source {
+			if _, ok := m.newReleases[a.id]; ok {
+				filtered = append(filtered, a)
+			}
+		}
+		m.artists = filtered
+		return
+	}
 
 	if m.filterInactive {
 		var filtered []artist
@@ -437,7 +508,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, keys.Quit):
+		if m.newReleasesMode {
+			m.newReleasesMode = false
+			m.applyFilter()
+			m.cursor = 0
+			m.paginator.Page = 0
+			m.updatePagination()
+			return m, nil
+		}
 		return m, tea.Quit
+
+	case key.Matches(msg, keys.PrevFollowed):
+		jumpToFollowed(&m, -1)
+
+	case key.Matches(msg, keys.NextFollowed):
+		jumpToFollowed(&m, 1)
 
 	case key.Matches(msg, keys.Up):
 		if m.cursor > 0 {
@@ -503,6 +588,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				followed = 1
 			}
 			_ = m.db.Q.SetFollowed(context.Background(), followed, a.id)
+			if !a.followed {
+				_ = m.db.Q.DeleteAlbumsByArtist(context.Background(), a.id)
+				delete(m.newReleases, a.id)
+			}
 			// Sync back to allArtists.
 			for i := range m.allArtists {
 				if m.allArtists[i].id == a.id {
@@ -523,7 +612,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, keys.Detail):
 		if len(m.artists) > 0 {
 			a := m.artists[m.globalIndex()]
-			m.modal = m.buildDiscographyModal(a)
+			if m.newReleasesMode {
+				m.modal = m.buildNewReleasesModal(a)
+			} else {
+				m.modal = m.buildDiscographyModal(a)
+			}
 		}
 
 	case key.Matches(msg, keys.FilterInactive):
@@ -567,6 +660,21 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		k := msg.Key()
 		if len(k.Text) == 1 {
 			r := rune(k.Text[0])
+			if r == '*' {
+				rows, qErr := m.db.Q.FollowedNewerReleases(context.Background())
+				if qErr == nil && len(rows) > 0 {
+					m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
+					for _, row := range rows {
+						m.newReleases[row.ArtistID] = append(m.newReleases[row.ArtistID], row)
+					}
+					m.newReleasesMode = true
+					m.applyFilter()
+					m.cursor = 0
+					m.paginator.Page = 0
+					m.updatePagination()
+				}
+				return m, nil
+			}
 			if r >= '0' && r <= '9' {
 				m.yearInput += string(r)
 				m.yearInputGen++
@@ -600,6 +708,20 @@ func (m *Model) jumpToSearch() {
 	}
 	for i, a := range m.artists {
 		if !strings.HasPrefix(strings.ToLower(a.name), m.search) {
+			continue
+		}
+		perPage := m.paginator.PerPage
+		m.paginator.Page = i / perPage
+		m.cursor = i % perPage
+		m.clampCursor()
+		return
+	}
+}
+
+func jumpToFollowed(m *Model, dir int) {
+	gi := m.globalIndex()
+	for i := gi + dir; i >= 0 && i < len(m.artists); i += dir {
+		if !m.artists[i].followed {
 			continue
 		}
 		perPage := m.paginator.PerPage
@@ -648,12 +770,31 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 	return &modalData{
 		kind:       modalDiscography,
 		artistName: a.name,
+		followed:   a.followed,
 		tracks:     allTracks,
 		cursor:     0,
 	}
 }
 
-func (m Model) renderDiscographyContent(md *modalData, showCursor bool) string {
+func (m Model) buildNewReleasesModal(a artist) *modalData {
+	releases := m.newReleases[a.id]
+	if len(releases) == 0 {
+		return &modalData{kind: modalNewReleases, artistName: a.name, followed: a.followed, content: "No new releases found."}
+	}
+	var tracks []modalTrack
+	for _, r := range releases {
+		line := albumStyle.Render(r.AlbumTitle) + "  " + mutedStyle.Render(r.ReleaseDate)
+		if r.SecondaryTypes != "" {
+			line += "  " + mutedStyle.Render("["+r.SecondaryTypes+"]")
+		}
+		tracks = append(tracks, modalTrack{album: r.AlbumTitle, line: line})
+	}
+	return &modalData{kind: modalNewReleases, artistName: a.name, followed: a.followed, tracks: tracks, cursor: 0}
+}
+
+func (m Model) renderDiscographyContent(md *modalData, showCursor bool, maxWidth int) string {
+	// Content width inside modal: subtract border (2) + padding (4).
+	colWidth := maxWidth - 6
 	// Group tracks by album.
 	var blocks []albumBlock
 	var current albumBlock
@@ -715,6 +856,20 @@ func (m Model) renderDiscographyContent(md *modalData, showCursor bool) string {
 		}
 	}
 
+	// Truncate lines to fit within modal content area.
+	trackWidth := colWidth
+	if len(rightLines) > 0 {
+		trackWidth = (colWidth - 4) / 2 // 4-char gap between columns
+	}
+	if trackWidth > 0 {
+		for i, l := range leftLines {
+			leftLines[i] = truncate(l, trackWidth)
+		}
+		for i, l := range rightLines {
+			rightLines[i] = truncate(l, trackWidth)
+		}
+	}
+
 	leftCol := strings.Join(leftLines, "\n")
 	if len(rightLines) == 0 {
 		return leftCol
@@ -773,6 +928,9 @@ func (m Model) View() tea.View {
 
 	var helpText string
 	switch {
+	case m.newReleasesMode:
+		helpText = searchStyle.Render("NEW RELEASES") +
+			helpStyle.Render(" (esc to return)  "+m.paginator.View())
 	case m.yearInput != "":
 		helpText = helpStyle.Render("years: ") + searchStyle.Render(m.yearInput) + helpStyle.Render("          "+m.paginator.View())
 	case m.search != "":
@@ -806,10 +964,19 @@ func (m Model) View() tea.View {
 		}
 
 		var inner string
-		title := modalTitleStyle.Render(m.modal.artistName)
+		var title string
+		if m.modal.kind == modalDiscography {
+			if m.modal.followed {
+				title = checkStyle.Render("✓") + " " + modalTitleStyle.Render(m.modal.artistName)
+			} else {
+				title = mutedStyle.Render("· " + m.modal.artistName)
+			}
+		} else {
+			title = modalTitleStyle.Render(m.modal.artistName)
+		}
 		switch m.modal.kind {
 		case modalDiscography:
-			body := m.renderDiscographyContent(m.modal, !m.modal.pinned)
+			body := m.renderDiscographyContent(m.modal, !m.modal.pinned, maxW)
 			var footer string
 			if m.modal.pinned {
 				footer = helpKeyStyle.Render("esc") + helpStyle.Render(" close")
@@ -819,6 +986,25 @@ func (m Model) View() tea.View {
 					helpKeyStyle.Render("p") + helpStyle.Render(" pin | ") +
 					helpKeyStyle.Render("esc") + helpStyle.Render(" close")
 			}
+			inner = title + "\n\n" + body + "\n" + footer
+		case modalNewReleases:
+			var body string
+			if len(m.modal.tracks) > 0 {
+				var lines []string
+				for i, t := range m.modal.tracks {
+					line := t.line
+					if i == m.modal.cursor {
+						line = selectedStyle.Render(line)
+					}
+					lines = append(lines, line)
+				}
+				body = strings.Join(lines, "\n")
+			} else {
+				body = m.modal.content
+			}
+			footer := helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
+				helpKeyStyle.Render("enter") + helpStyle.Render(" search | ") +
+				helpKeyStyle.Render("esc") + helpStyle.Render(" close")
 			inner = title + "\n\n" + body + "\n" + footer
 		case modalConfirmFetch:
 			content := m.modal.content
@@ -844,9 +1030,25 @@ func (m Model) View() tea.View {
 	return v
 }
 
+var cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
 func (m Model) renderItem(a artist, selected bool, width int) string {
 	var prefix, name string
-	if a.followed {
+	if m.newReleasesMode {
+		if selected {
+			prefix = cursorStyle.Render("▸")
+		} else {
+			prefix = " "
+		}
+		name = a.name
+	} else if selected {
+		prefix = cursorStyle.Render("▸")
+		if a.followed {
+			name = a.name
+		} else {
+			name = mutedStyle.Render(a.name)
+		}
+	} else if a.followed {
 		prefix = checkStyle.Render("✓")
 		name = a.name
 	} else {
@@ -855,23 +1057,20 @@ func (m Model) renderItem(a artist, selected bool, width int) string {
 	}
 
 	nameWidth := width - 3
+	hasNewRelease := !m.newReleasesMode && m.newReleases != nil
+	if hasNewRelease {
+		if _, ok := m.newReleases[a.id]; ok {
+			nameWidth--
+		} else {
+			hasNewRelease = false
+		}
+	}
 	line := prefix + " " + truncate(name, nameWidth)
-
-	if selected {
-		plain := renderPlain(a, width)
-		line = selectedStyle.Render(plain)
+	if hasNewRelease {
+		line += newReleaseStyle.Render("*")
 	}
 
 	return padToWidth(line, width)
-}
-
-func renderPlain(a artist, width int) string {
-	prefix := "✓"
-	if !a.followed {
-		prefix = "·"
-	}
-	nameWidth := width - 3
-	return prefix + " " + truncate(a.name, nameWidth)
 }
 
 func truncate(s string, max int) string {

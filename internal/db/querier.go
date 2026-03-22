@@ -14,13 +14,16 @@ type Querier interface {
 	AllFileMeta(ctx context.Context) ([]AllFileMetaRow, error)
 	AllFilePaths(ctx context.Context) ([]string, error)
 	ArtistLocalTracks(ctx context.Context, artistID int64) ([]ArtistLocalTracksRow, error)
+	DeleteAlbumsByArtist(ctx context.Context, artistID int64) error
 	DeleteFileByPath(ctx context.Context, path string) error
 	DistinctArtistIDs(ctx context.Context) ([]int64, error)
+	// Followed artists with MB albums newer than their latest local album.
+	FollowedNewerReleases(ctx context.Context) ([]FollowedNewerReleasesRow, error)
 	GetArtistByID(ctx context.Context, id int64) (GetArtistByIDRow, error)
 	GetArtistByNameNorm(ctx context.Context, nameNorm string) (GetArtistByNameNormRow, error)
 	InsertArtist(ctx context.Context, name string, nameNorm string) (int64, error)
 	MarkArtistNotFound(ctx context.Context, id int64) error
-	// Artists with MB albums released since cutoff that aren't in local files.
+	// Artists with MB albums released since cutoff that are newer than the latest local album.
 	NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error)
 	SetFollowed(ctx context.Context, followed int64, iD int64) error
 	SetInactive(ctx context.Context, inactive int64, iD int64) error
