@@ -1,10 +1,8 @@
 # musup
 
-A TUI that lives in your music folder. Point it at a directory of audio files and it scans metadata, catalogs your artists, and — when you ask — checks [MusicBrainz](https://musicbrainz.org/) for albums you might be missing. The MusicBrainz part is rate-limited to one request per second, so syncing a large library is a *meditative* experience. Bring a book.
+A CLI that lives in your music folder. It scans audio file metadata, catalogs your artists, and checks [MusicBrainz](https://musicbrainz.org/) for albums you might be missing. The MusicBrainz part is rate-limited to one request per second, so syncing a large library is a *meditative* experience. Bring a book.
 
-No subcommands. Just `cd` into your music folder and run `musup`. It opens a local SQLite database (`.musup.db`), incrementally scans for new or changed files, then drops you into an interactive artist browser. Second run is fast — only changed files get re-read.
-
-Built on [dhowden/tag](https://github.com/dhowden/tag) for metadata parsing and inspired by the API patterns in [michiwend/gomusicbrainz](https://github.com/michiwend/gomusicbrainz), though the MusicBrainz client is homegrown.
+Built on [dhowden/tag](https://github.com/dhowden/tag) for metadata parsing and the [Bubble Tea](https://charm.sh/) stack for the terminal UI. The MusicBrainz client is homegrown, inspired by API patterns in [michiwend/gomusicbrainz](https://github.com/michiwend/gomusicbrainz).
 
 ## Install
 
@@ -31,47 +29,77 @@ Requires Go 1.26+.
 
 ## Usage
 
+### Browse artists
+
 ```
 cd ~/Music
 musup
 ```
 
-That's it. The TUI takes over from there.
+Opens a three-column artist browser. All artists found via `AlbumArtist` tags are shown — guest and compilation-only artists are filtered out. Artists are sorted case-insensitively. You can follow/unfollow artists, view their local discography, open tracks in your default player, and filter by activity status.
 
-### Key bindings
+### Check for new releases
 
-| Key | Action |
-|-----|--------|
-| `/` | Filter artists by name |
-| `o` | Sort — name, newest album, album count |
-| `s` | Set monitor status — *monitor*, *sometimes*, or *ignore* |
-| `Enter` | View an artist's albums; drill into track listing |
-| `u` | Sync selected artist with MusicBrainz |
-| `U` | Bulk sync all *followed* artists |
-| `Esc` | Back |
-| `q` | Quit |
+```
+musup 3
+```
 
-### Monitor status
+Syncs followed artists with MusicBrainz (skipping anyone checked in the last 7 days), then prints albums released in the last 3 years that you don't have locally. Only followed artists are synced — unfollowed artists are ignored entirely, which keeps the sync fast.
 
-Each artist has a monitor level that controls whether `U` (bulk sync) includes them:
+### Scan files
 
-- **Monitor** (default) — always included in bulk sync
-- **Sometimes** — manual sync only (`u`)
-- **Ignore** — never synced
+```
+musup scan [path]
+```
 
-Press `s` on any artist to change their status.
+Walks the directory tree, reads tags, and upserts file metadata into the database. Incremental by default — only files whose size or mtime changed get re-read. Tag reading is parallelized across 8 workers.
 
 ### The `--db` flag
 
-Overrides the database location if you don't want `.musup.db` cluttering your music folder, though honestly it's a single file and SQLite is already in your life whether you know it or not.
+Overrides the database location if you don't want `.musup.db` in your music folder, though honestly it's a single file and SQLite is already in your life whether you know it or not.
+
+## Keyboard shortcuts
+
+The TUI has two contexts: the main artist grid and modal overlays.
+
+### Artist grid
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Move cursor up/down within a column |
+| `←` `→` | Move cursor between columns; wraps across pages |
+| `space` | Toggle follow status; advances cursor for rapid toggling |
+| `enter` | Open discography modal showing local albums and tracks |
+| `pgup` `pgdn` | Previous/next page |
+| `a`–`z` | Type-to-search; jumps to the first matching artist name (debounced) |
+| `1`–`9` | Filter to artists with no MB release in N years (debounced; `0` clears) |
+| `.` | Filter to inactive (deceased/disbanded) artists |
+| `?` | Help modal |
+| `esc` | Quit |
+
+### Discography modal
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` | Select track |
+| `enter` | Open selected track in default app (`open` on macOS, `xdg-open` on Linux) |
+| `esc` | Close modal |
+
+### Help and confirmation modals
+
+| Key | Action |
+|-----|--------|
+| *any key* | Dismiss help modal |
+| `enter` | Confirm action (e.g. fetch inactive status from MusicBrainz) |
+| `esc` | Cancel / dismiss |
 
 ## How it works
 
-1. **Scan** — walks the directory tree, reads ID3/Vorbis/MP4/ASF tags, stores artist and album metadata in SQLite. Incremental by default; skips files whose size and mtime haven't changed. Tag reading is parallelized across 8 workers because life is short.
+1. **Scan** — walks the directory, reads ID3/Vorbis/MP4/ASF tags, stores metadata in SQLite. Each file is linked to an artist via integer foreign key. The `AlbumArtist` tag determines the primary artist; files with only an `Artist` tag are flagged as non-album-artist so they don't clutter the list.
 
-2. **Browse** — a [Bubble Tea](https://github.com/charmbracelet/bubbletea) TUI lists every artist with album counts, track ratios, and newest album title. Filter, sort, drill into album track listings. Local tracks are matched against the MusicBrainz catalog using fuzzy normalized titles — so *"Loser"* matches *"Loser (radio edit)"* without you losing sleep over it.
+2. **Browse** — a three-column paginated grid shows every album artist. Followed artists get a green `✓`; unfollowed are muted. Type letters to jump to an artist, press digits to filter by release recency, or `.` to show inactive artists. Press `enter` to see what you have locally — albums and tracks in a two-column modal with release years.
 
-3. **Sync** — queries [MusicBrainz](https://musicbrainz.org/) for an artist's full discography, stores albums and tracks locally, and shows you what you have versus what exists. Supports single-artist sync (`u`) or bulk sync of all followed artists (`U`). Already-fetched albums are skipped on subsequent syncs.
+3. **Sync** — queries MusicBrainz for each followed artist's discography and stores albums locally. Results are cached; only artists past the stale window (7 days) get re-checked. The check command (`musup N`) then compares your local files against the MB catalog and shows what's new.
 
 ## Supported formats
 
@@ -83,8 +111,6 @@ Overrides the database location if you don't want `.musup.db` cluttering your mu
 | `.mp4` | MPEG-4 audio |
 | `.aac` | AAC |
 | `.wma` | Windows Media Audio (ASF) |
-
-WMA support uses a minimal built-in ASF header parser — no external dependencies, just enough to pull artist, album, title, and track number from the metadata objects.
 
 ## License
 

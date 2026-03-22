@@ -6,6 +6,10 @@
 
 - TUI for toggling followed artists; `musup <N>` keeps CLI mode ([#61](https://github.com/toba/musup/issues/61))
 
+### 🐛 Fixes
+
+- Fetching Inactive Status modal fails to disappear after fetch completes ([#62](https://github.com/toba/musup/issues/62))
+
 ## Week of Mar 15 – Mar 21, 2026
 
 ### ✨ Features

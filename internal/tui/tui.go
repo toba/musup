@@ -6,7 +6,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -53,6 +55,7 @@ func buildHelpContent() string {
 		{"enter", "Show albums/tracks"},
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
+		{"1-9", "Filter by release recency"},
 		{".", "Show inactive artists"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
@@ -89,16 +92,18 @@ var (
 )
 
 type artist struct {
-	id       int64
-	name     string
-	followed bool
-	inactive bool
+	id            int64
+	name          string
+	followed      bool
+	inactive      bool
+	latestRelease string
 }
 
 type modalTrack struct {
-	path  string
-	album string
-	line  string // e.g. "  3. Title"
+	path        string
+	album       string
+	releaseYear string
+	line        string // e.g. "  3. Title"
 }
 
 type modalKind int
@@ -118,12 +123,29 @@ type modalData struct {
 }
 
 type searchClearMsg int
+type yearInputMsg int
 
 // FetchInactiveFunc queries MusicBrainz for each artist's inactive status.
 // It should call onProgress for each artist processed and check ctx for cancellation.
 type FetchInactiveFunc func(ctx context.Context, d *db.DB, onProgress func(name string)) (map[int64]bool, error)
 
-type inactiveProgressMsg struct{ name string }
+type fetchState struct {
+	mu   sync.Mutex
+	name string
+}
+
+func (fs *fetchState) set(name string) {
+	fs.mu.Lock()
+	fs.name = name
+	fs.mu.Unlock()
+}
+
+func (fs *fetchState) get() string {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	return fs.name
+}
+
 type inactiveDataMsg struct {
 	inactive map[int64]bool
 	err      error
@@ -138,12 +160,16 @@ type Model struct {
 	musicRoot      string
 	fetchInactive  FetchInactiveFunc
 	fetchCancel    context.CancelFunc
+	fetchProgress  *fetchState
 	paginator      paginator.Model
 	modal          *modalData
 	spinner        spinner.Model
 	search         string
 	searchGen      int
 	filterInactive bool
+	yearInput      string
+	yearInputGen   int
+	filterYears    int
 	fetching       bool
 	width          int
 	height         int
@@ -175,7 +201,7 @@ func (m Model) loadArtists() tea.Msg {
 	}
 	artists := make([]artist, len(rows))
 	for i, r := range rows {
-		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1}
+		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1, latestRelease: r.LatestRelease}
 	}
 	return artistsMsg(artists)
 }
@@ -201,15 +227,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if int(msg) == m.searchGen {
 			m.search = ""
 		}
+	case yearInputMsg:
+		if int(msg) == m.yearInputGen && m.yearInput != "" {
+			n, err := strconv.Atoi(m.yearInput)
+			if err == nil {
+				m.filterYears = n
+				m.applyFilter()
+				m.cursor = 0
+				m.paginator.Page = 0
+				m.updatePagination()
+			}
+			m.yearInput = ""
+		}
 	case spinner.TickMsg:
 		if m.fetching {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
-		}
-	case inactiveProgressMsg:
-		if m.modal != nil && m.modal.kind == modalConfirmFetch {
-			m.modal.content = m.spinner.View() + " " + msg.name
 		}
 	case inactiveDataMsg:
 		m.fetching = false
@@ -305,29 +339,44 @@ func openFile(path string) {
 func (m *Model) startFetch() tea.Cmd {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated esc
 	m.fetchCancel = cancel
+	m.fetchProgress = &fetchState{}
 
+	fs := m.fetchProgress
+	fetchFn := m.fetchInactive
+	db := m.db
 	return func() tea.Msg {
-		result, err := m.fetchInactive(ctx, m.db, func(name string) {
-			// This runs in the fetch goroutine; we can't send tea.Msg directly,
-			// but we update the modal content field which View() reads.
-			// The spinner tick will trigger a re-render.
-			m.modal.content = m.spinner.View() + " " + name
+		result, err := fetchFn(ctx, db, func(name string) {
+			fs.set(name)
 		})
 		return inactiveDataMsg{inactive: result, err: err}
 	}
 }
 
 func (m *Model) applyFilter() {
-	if !m.filterInactive {
-		m.artists = m.allArtists
-		return
-	}
-	m.artists = nil
-	for _, a := range m.allArtists {
-		if a.inactive {
-			m.artists = append(m.artists, a)
+	source := m.allArtists
+
+	if m.filterInactive {
+		var filtered []artist
+		for _, a := range source {
+			if a.inactive {
+				filtered = append(filtered, a)
+			}
 		}
+		source = filtered
 	}
+
+	if m.filterYears > 0 {
+		cutoff := time.Now().AddDate(-m.filterYears, 0, 0).Format("2006-01-02")
+		var filtered []artist
+		for _, a := range source {
+			if a.latestRelease == "" || a.latestRelease < cutoff {
+				filtered = append(filtered, a)
+			}
+		}
+		source = filtered
+	}
+
+	m.artists = source
 }
 
 func (m *Model) updatePagination() {
@@ -489,6 +538,19 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		k := msg.Key()
 		if len(k.Text) == 1 {
 			r := rune(k.Text[0])
+			if r >= '0' && r <= '9' {
+				m.yearInput += string(r)
+				m.yearInputGen++
+				gen := m.yearInputGen
+				return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+					return yearInputMsg(gen)
+				})
+			}
+			if m.yearInput != "" {
+				// Non-digit while accumulating year input — cancel.
+				m.yearInput = ""
+				return m, nil
+			}
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 				m.search += strings.ToLower(string(r))
 				m.searchGen++
@@ -520,8 +582,9 @@ func (m *Model) jumpToSearch() {
 }
 
 type albumBlock struct {
-	name   string
-	tracks []modalTrack
+	name        string
+	releaseYear string
+	tracks      []modalTrack
 }
 
 func (m Model) buildDiscographyModal(a artist) *modalData {
@@ -546,7 +609,11 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 		if r.Album != currentAlbum {
 			currentAlbum = r.Album
 		}
-		allTracks = append(allTracks, modalTrack{path: r.Path, album: r.Album, line: line})
+		year := ""
+		if len(r.ReleaseDate) >= 4 {
+			year = r.ReleaseDate[:4]
+		}
+		allTracks = append(allTracks, modalTrack{path: r.Path, album: r.Album, releaseYear: year, line: line})
 	}
 
 	return &modalData{
@@ -566,7 +633,7 @@ func (m Model) renderDiscographyContent(md *modalData) string {
 			if len(current.tracks) > 0 {
 				blocks = append(blocks, current)
 			}
-			current = albumBlock{name: t.album}
+			current = albumBlock{name: t.album, releaseYear: t.releaseYear}
 		}
 		current.tracks = append(current.tracks, t)
 	}
@@ -584,7 +651,11 @@ func (m Model) renderDiscographyContent(md *modalData) string {
 	var rendered []renderedBlock
 	for _, b := range blocks {
 		var lines []string
-		lines = append(lines, albumStyle.Render(b.name))
+		albumTitle := albumStyle.Render(b.name)
+		if b.releaseYear != "" {
+			albumTitle += " " + mutedStyle.Render(b.releaseYear)
+		}
+		lines = append(lines, albumTitle)
 		for _, t := range b.tracks {
 			line := t.line
 			if trackIdx == md.cursor {
@@ -672,18 +743,26 @@ func (m Model) View() tea.View {
 	body := lipgloss.JoinHorizontal(lipgloss.Top, colStrs...)
 
 	var helpText string
-	if m.search != "" {
+	switch {
+	case m.yearInput != "":
+		helpText = helpStyle.Render("years: ") + searchStyle.Render(m.yearInput) + helpStyle.Render("          "+m.paginator.View())
+	case m.search != "":
 		helpText = helpStyle.Render("search: ") + searchStyle.Render(m.search) + helpStyle.Render("          "+m.paginator.View())
-	} else {
+	case m.filterInactive && m.filterYears > 0:
+		helpText = searchStyle.Render(fmt.Sprintf("INACTIVE + NO RELEASE %dY", m.filterYears)) +
+			helpStyle.Render(" (. / 0 to clear)  "+m.paginator.View())
+	case m.filterInactive:
+		helpText = searchStyle.Render("INACTIVE") + helpStyle.Render(" (. to clear)  "+m.paginator.View())
+	case m.filterYears > 0:
+		helpText = searchStyle.Render(fmt.Sprintf("NO RELEASE %dY", m.filterYears)) +
+			helpStyle.Render(" (0 to clear)  "+m.paginator.View())
+	default:
 		helpText = helpKeyStyle.Render("↑↓←→") + helpStyle.Render(" navigate | ") +
 			helpKeyStyle.Render("space") + helpStyle.Render(" toggle | ") +
 			helpKeyStyle.Render("enter") + helpStyle.Render(" detail | ") +
 			helpKeyStyle.Render("pgup/dn") + helpStyle.Render(" page | ") +
 			helpKeyStyle.Render("?") + helpStyle.Render(" help | ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" quit  "+m.paginator.View())
-	}
-	if m.filterInactive {
-		helpText = searchStyle.Render("INACTIVE") + helpStyle.Render(" (. to clear)  "+m.paginator.View())
 	}
 	content := body + "\n\n" + helpText
 
@@ -707,8 +786,12 @@ func (m Model) View() tea.View {
 				helpKeyStyle.Render("esc") + helpStyle.Render(" close")
 			inner = title + "\n\n" + body + "\n" + footer
 		case modalConfirmFetch:
+			content := m.modal.content
+			if m.fetching && m.fetchProgress != nil {
+				content = m.spinner.View() + " " + m.fetchProgress.get()
+			}
 			footer := "\n" + helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
-			inner = title + "\n\n" + m.modal.content + footer
+			inner = title + "\n\n" + content + footer
 		default:
 			footer := helpStyle.Render("Press any key to close")
 			inner = title + "\n\n" + m.modal.content + "\n" + footer

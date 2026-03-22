@@ -10,7 +10,8 @@ import (
 )
 
 const albumArtists = `-- name: AlbumArtists :many
-SELECT ar.id, ar.name, ar.followed, ar.inactive
+SELECT ar.id, ar.name, ar.followed, ar.inactive,
+       CAST(COALESCE((SELECT MAX(al.release_date) FROM albums al WHERE al.artist_id = ar.id), '') AS TEXT) AS latest_release
 FROM artists ar
 WHERE ar.id IN (
     SELECT artist_id FROM files
@@ -22,10 +23,11 @@ ORDER BY ar.name COLLATE NOCASE
 `
 
 type AlbumArtistsRow struct {
-	ID       int64
-	Name     string
-	Followed int64
-	Inactive int64
+	ID            int64
+	Name          string
+	Followed      int64
+	Inactive      int64
+	LatestRelease string
 }
 
 // All album artists with their followed status, for the TUI.
@@ -43,6 +45,7 @@ func (q *Queries) AlbumArtists(ctx context.Context) ([]AlbumArtistsRow, error) {
 			&i.Name,
 			&i.Followed,
 			&i.Inactive,
+			&i.LatestRelease,
 		); err != nil {
 			return nil, err
 		}

@@ -31,7 +31,9 @@ WHERE f.artist != '' AND f.is_album_artist = 1 AND f.artist_id != 0
   AND a.followed = 1;
 
 -- name: ArtistLocalTracks :many
-SELECT path, album, track_number, title
-FROM files
-WHERE artist_id = ? AND album != ''
-ORDER BY album COLLATE NOCASE, track_number, title COLLATE NOCASE;
+SELECT f.path, f.album, f.track_number, f.title,
+       CAST(COALESCE(al.release_date, '') AS TEXT) AS release_date
+FROM files f
+LEFT JOIN albums al ON al.artist_id = f.artist_id AND al.title_norm = f.album_norm
+WHERE f.artist_id = ? AND f.album != ''
+ORDER BY f.album COLLATE NOCASE, f.track_number, f.title COLLATE NOCASE;

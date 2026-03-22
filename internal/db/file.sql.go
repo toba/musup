@@ -76,10 +76,12 @@ func (q *Queries) AllFilePaths(ctx context.Context) ([]string, error) {
 }
 
 const artistLocalTracks = `-- name: ArtistLocalTracks :many
-SELECT path, album, track_number, title
-FROM files
-WHERE artist_id = ? AND album != ''
-ORDER BY album COLLATE NOCASE, track_number, title COLLATE NOCASE
+SELECT f.path, f.album, f.track_number, f.title,
+       CAST(COALESCE(al.release_date, '') AS TEXT) AS release_date
+FROM files f
+LEFT JOIN albums al ON al.artist_id = f.artist_id AND al.title_norm = f.album_norm
+WHERE f.artist_id = ? AND f.album != ''
+ORDER BY f.album COLLATE NOCASE, f.track_number, f.title COLLATE NOCASE
 `
 
 type ArtistLocalTracksRow struct {
@@ -87,6 +89,7 @@ type ArtistLocalTracksRow struct {
 	Album       string
 	TrackNumber int64
 	Title       string
+	ReleaseDate string
 }
 
 func (q *Queries) ArtistLocalTracks(ctx context.Context, artistID int64) ([]ArtistLocalTracksRow, error) {
@@ -103,6 +106,7 @@ func (q *Queries) ArtistLocalTracks(ctx context.Context, artistID int64) ([]Arti
 			&i.Album,
 			&i.TrackNumber,
 			&i.Title,
+			&i.ReleaseDate,
 		); err != nil {
 			return nil, err
 		}
