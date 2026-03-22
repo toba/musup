@@ -75,10 +75,7 @@ func buildHelpContent() string {
 			sb.WriteByte('\n')
 		}
 		styled := helpKeyStyle.Render(e[0])
-		pad := colWidth - lipgloss.Width(e[0])
-		if pad < 1 {
-			pad = 1
-		}
+		pad := max(colWidth-lipgloss.Width(e[0]), 1)
 		sb.WriteString(styled + strings.Repeat(" ", pad) + e[1])
 	}
 	return sb.String()
@@ -480,10 +477,7 @@ func (m *Model) applyFilter() {
 }
 
 func (m *Model) updatePagination() {
-	perPage := m.rowsPerCol() * m.cols
-	if perPage < 1 {
-		perPage = 1
-	}
+	perPage := max(m.rowsPerCol()*m.cols, 1)
 	m.paginator.PerPage = perPage
 	m.paginator.SetTotalPages(len(m.artists))
 	m.clampCursor()
@@ -879,10 +873,9 @@ func (m Model) renderDiscographyContent(md *modalData, showCursor bool, maxWidth
 }
 
 func (m Model) rowsPerCol() int {
-	avail := m.height - 3 // blank line + help bar + padding
-	if avail < 1 {
-		avail = 1
-	}
+	avail := max(
+		// blank line + help bar + padding
+		m.height-3, 1)
 	return avail
 }
 
@@ -900,10 +893,7 @@ func (m Model) View() tea.View {
 	}
 
 	rows := m.rowsPerCol()
-	colWidth := m.width / m.cols
-	if colWidth < 20 {
-		colWidth = 20
-	}
+	colWidth := max(m.width/m.cols, 20)
 
 	start, end := m.paginator.GetSliceBounds(len(m.artists))
 	pageArtists := m.artists[start:end]

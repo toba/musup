@@ -16,6 +16,7 @@ const (
 	mbMinMatchScore            = 90
 	mbMaxReleaseGroups         = 500
 	mbMaxReleaseGroupsComposer = 100
+	composerTag                = "composer"
 )
 
 // Progress is sent via the callback to report sync progress.
@@ -97,11 +98,7 @@ func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID 
 		mbArtist := result.Artists[0]
 		mbid = mbArtist.ID
 
-		inactive := int64(0)
-		if mbArtist.LifeSpan.Ended {
-			inactive = 1
-		}
-		_ = d.Q.SetInactive(ctx, inactive, artistID)
+		_ = d.Q.SetInactive(ctx, int64(db.BoolToInt(mbArtist.LifeSpan.Ended)), artistID)
 
 		rgCap := mbMaxReleaseGroups
 		if hasComposerTag(mbArtist) {
@@ -178,11 +175,7 @@ func FetchInactiveStatus(ctx context.Context, d *db.DB, mb *musicbrainz.Client, 
 		}
 		inactive := sr.Artists[0].LifeSpan.Ended
 		result[id] = inactive
-		val := int64(0)
-		if inactive {
-			val = 1
-		}
-		_ = d.Q.SetInactive(ctx, val, id)
+		_ = d.Q.SetInactive(ctx, int64(db.BoolToInt(inactive)), id)
 	}
 
 	return result, nil
@@ -190,7 +183,7 @@ func FetchInactiveStatus(ctx context.Context, d *db.DB, mb *musicbrainz.Client, 
 
 func hasComposerTag(artist musicbrainz.Artist) bool {
 	for _, tag := range artist.Tags {
-		if tag.Name == "composer" {
+		if tag.Name == composerTag {
 			return true
 		}
 	}

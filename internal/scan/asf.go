@@ -8,6 +8,15 @@ import (
 	"unicode/utf16"
 )
 
+// WMA extended content description field names.
+const (
+	wmAlbumTitle  = "WM/ALBUMTITLE"
+	wmAlbumArtist = "WM/ALBUMARTIST"
+	wmTrackNumber = "WM/TRACKNUMBER"
+	wmTrack       = "WM/TRACK"
+	wmTitle       = "TITLE"
+)
+
 // ASF/WMV GUIDs (binary representation, little-endian mixed-endian format).
 var (
 	guidHeaderObject   = [16]byte{0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11, 0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C}
@@ -174,23 +183,23 @@ func parseExtContentDesc(r io.ReadSeeker, _ int64) (albumArtist, album, title st
 
 		nameUpper := strings.ToUpper(name)
 		switch nameUpper {
-		case "WM/ALBUMTITLE":
+		case wmAlbumTitle:
 			album = decodeUTF16LE(valBytes)
-		case "WM/ALBUMARTIST":
+		case wmAlbumArtist:
 			albumArtist = decodeUTF16LE(valBytes)
-		case "WM/TRACKNUMBER":
+		case wmTrackNumber:
 			if valType == 0 { // string
 				trackNumber = parseTrackString(decodeUTF16LE(valBytes))
 			} else if valType == 3 && len(valBytes) >= 4 { // DWORD
 				trackNumber = int(binary.LittleEndian.Uint32(valBytes))
 			}
-		case "WM/TRACK":
+		case wmTrack:
 			if trackNumber == 0 {
 				if valType == 3 && len(valBytes) >= 4 {
 					trackNumber = int(binary.LittleEndian.Uint32(valBytes)) + 1 // WM/Track is 0-based
 				}
 			}
-		case "TITLE":
+		case wmTitle:
 			title = decodeUTF16LE(valBytes)
 		}
 	}
@@ -199,14 +208,7 @@ func parseExtContentDesc(r io.ReadSeeker, _ int64) (albumArtist, album, title st
 }
 
 func parseTrackString(s string) int {
-	n := 0
-	for _, ch := range s {
-		if ch < '0' || ch > '9' {
-			break
-		}
-		n = n*10 + int(ch-'0')
-	}
-	return n
+	return parseLeadingInt(s)
 }
 
 // decodeUTF16LE decodes a UTF-16LE byte slice, stripping null terminators.

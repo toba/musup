@@ -226,18 +226,10 @@ func parseFilename(basename string) (title string, trackNumber int) {
 		return name, 0
 	}
 	if i == len(name) {
-		// Entire name is digits — treat as track number only
-		num := 0
-		for _, ch := range name[:i] {
-			num = num*10 + int(ch-'0')
-		}
-		return "", num
+		return "", parseLeadingInt(name[:i])
 	}
 
-	num := 0
-	for _, ch := range name[:i] {
-		num = num*10 + int(ch-'0')
-	}
+	num := parseLeadingInt(name[:i])
 
 	rest := name[i:]
 	// Strip leading separators: space, dot, dash, underscore
@@ -247,4 +239,15 @@ func parseFilename(basename string) (title string, trackNumber int) {
 	}
 
 	return rest, num
+}
+
+func parseLeadingInt(s string) int {
+	n := 0
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
 }
