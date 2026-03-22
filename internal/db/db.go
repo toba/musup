@@ -282,6 +282,28 @@ func (d *DB) migrate() error {
 		version = 15
 	}
 
+	// Version 15 → 16: add ended flag to artists (original name)
+	if version < 16 {
+		if err := d.addColumnIfMissing("artists", "ended", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		version = 16
+	}
+
+	// Version 16 → 17: rename ended → inactive
+	if version < 17 {
+		if err := d.addColumnIfMissing("artists", "inactive", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec("UPDATE artists SET inactive = ended WHERE ended != 0"); err != nil {
+			return err
+		}
+		if err := d.dropColumnIfExists("artists", "ended"); err != nil {
+			return err
+		}
+		version = 17
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }

@@ -23,6 +23,7 @@ type Querier interface {
 	// Artists with MB albums released since cutoff that aren't in local files.
 	NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error)
 	SetFollowed(ctx context.Context, followed int64, iD int64) error
+	SetInactive(ctx context.Context, inactive int64, iD int64) error
 	UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error
 	UpdateArtistMeta(ctx context.Context, mbid string, lastCheckedAt string, iD int64) error
 	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) error

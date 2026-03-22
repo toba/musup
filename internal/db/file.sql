@@ -25,8 +25,10 @@ SELECT path FROM files;
 DELETE FROM files WHERE path = ?;
 
 -- name: DistinctArtistIDs :many
-SELECT DISTINCT artist_id FROM files
-WHERE artist != '' AND is_album_artist = 1 AND artist_id != 0;
+SELECT DISTINCT f.artist_id FROM files f
+JOIN artists a ON a.id = f.artist_id
+WHERE f.artist != '' AND f.is_album_artist = 1 AND f.artist_id != 0
+  AND a.followed = 1;
 
 -- name: ArtistLocalTracks :many
 SELECT path, album, track_number, title

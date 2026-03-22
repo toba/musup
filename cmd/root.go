@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,9 +55,21 @@ func runTUI() error {
 	}
 	defer func() { _ = d.Close() }()
 
-	p := tea.NewProgram(tui.New(d, filepath.Dir(dp)))
-	_, err = p.Run()
-	return err
+	mb := musicbrainz.New("musup", ver, "https://github.com/toba/musup")
+
+	fetchEnded := func(ctx context.Context, d *db.DB, onProgress func(string)) (map[int64]bool, error) {
+		return check.FetchInactiveStatus(ctx, d, mb, onProgress)
+	}
+
+	p := tea.NewProgram(tui.New(d, filepath.Dir(dp), fetchEnded))
+	finalModel, err := p.Run()
+	if err != nil {
+		return err
+	}
+	if m, ok := finalModel.(tui.Model); ok && m.Err() != nil {
+		return m.Err()
+	}
+	return nil
 }
 
 func runCheck(cmd *cobra.Command, args []string) error {

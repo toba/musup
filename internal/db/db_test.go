@@ -390,8 +390,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 15 {
-		t.Fatalf("expected user_version 15, got %d", version)
+	if version != 17 {
+		t.Fatalf("expected user_version 16, got %d", version)
 	}
 }
 
@@ -416,8 +416,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 15 {
-		t.Fatalf("expected user_version 15, got %d", version)
+	if version != 17 {
+		t.Fatalf("expected user_version 16, got %d", version)
 	}
 }
 
@@ -628,7 +628,7 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 15 {
+	if version != 17 {
 		t.Fatalf("expected version 15, got %d", version)
 	}
 

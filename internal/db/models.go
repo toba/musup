@@ -23,6 +23,7 @@ type Artist struct {
 	LastCheckedAt string
 	NotFound      int64
 	Followed      int64
+	Inactive      int64
 }
 
 type File struct {

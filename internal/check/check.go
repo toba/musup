@@ -94,10 +94,17 @@ func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID 
 		if len(result.Artists) == 0 || result.Artists[0].Score < mbMinMatchScore {
 			return d.Q.MarkArtistNotFound(ctx, artistID)
 		}
-		mbid = result.Artists[0].ID
+		mbArtist := result.Artists[0]
+		mbid = mbArtist.ID
+
+		inactive := int64(0)
+		if mbArtist.LifeSpan.Ended {
+			inactive = 1
+		}
+		_ = d.Q.SetInactive(ctx, inactive, artistID)
 
 		rgCap := mbMaxReleaseGroups
-		if hasComposerTag(result.Artists[0]) {
+		if hasComposerTag(mbArtist) {
 			rgCap = mbMaxReleaseGroupsComposer
 		}
 
@@ -135,6 +142,50 @@ func fetchAndStoreAlbums(ctx context.Context, d *db.DB, mb *musicbrainz.Client, 
 	}
 
 	return nil
+}
+
+// FetchInactiveStatus queries MusicBrainz for the inactive (deceased/disbanded) status
+// of all followed artists that have an MBID. Returns a map of artist ID → inactive.
+func FetchInactiveStatus(ctx context.Context, d *db.DB, mb *musicbrainz.Client, onProgress func(string)) (map[int64]bool, error) {
+	artistIDs, err := d.Q.DistinctArtistIDs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list artists: %w", err)
+	}
+
+	result := make(map[int64]bool, len(artistIDs))
+	for _, id := range artistIDs {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		row, err := d.Q.GetArtistByID(ctx, id)
+		if err != nil {
+			continue
+		}
+		if row.Mbid == "" {
+			continue
+		}
+
+		if onProgress != nil {
+			onProgress(row.Name)
+		}
+
+		sr, err := mb.SearchArtists(ctx, row.Name, 1, 0)
+		if err != nil {
+			continue
+		}
+		if len(sr.Artists) == 0 {
+			continue
+		}
+		inactive := sr.Artists[0].LifeSpan.Ended
+		result[id] = inactive
+		val := int64(0)
+		if inactive {
+			val = 1
+		}
+		_ = d.Q.SetInactive(ctx, val, id)
+	}
+
+	return result, nil
 }
 
 func hasComposerTag(artist musicbrainz.Artist) bool {

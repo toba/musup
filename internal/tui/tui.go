@@ -11,35 +11,38 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/paginator"
+	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/toba/musup/internal/db"
 )
 
 type keyMap struct {
-	Up       key.Binding
-	Down     key.Binding
-	Left     key.Binding
-	Right    key.Binding
-	Toggle   key.Binding
-	NextPage key.Binding
-	PrevPage key.Binding
-	Detail   key.Binding
-	Help     key.Binding
-	Quit     key.Binding
+	Up             key.Binding
+	Down           key.Binding
+	Left           key.Binding
+	Right          key.Binding
+	Toggle         key.Binding
+	NextPage       key.Binding
+	PrevPage       key.Binding
+	Detail         key.Binding
+	Help           key.Binding
+	FilterInactive key.Binding
+	Quit           key.Binding
 }
 
 var keys = keyMap{
-	Up:       key.NewBinding(key.WithKeys("up")),
-	Down:     key.NewBinding(key.WithKeys("down")),
-	Left:     key.NewBinding(key.WithKeys("left")),
-	Right:    key.NewBinding(key.WithKeys("right")),
-	Toggle:   key.NewBinding(key.WithKeys("space")),
-	NextPage: key.NewBinding(key.WithKeys("pgdown")),
-	PrevPage: key.NewBinding(key.WithKeys("pgup")),
-	Detail:   key.NewBinding(key.WithKeys("enter")),
-	Help:     key.NewBinding(key.WithKeys("?")),
-	Quit:     key.NewBinding(key.WithKeys("esc", "ctrl+c")),
+	Up:             key.NewBinding(key.WithKeys("up")),
+	Down:           key.NewBinding(key.WithKeys("down")),
+	Left:           key.NewBinding(key.WithKeys("left")),
+	Right:          key.NewBinding(key.WithKeys("right")),
+	Toggle:         key.NewBinding(key.WithKeys("space")),
+	NextPage:       key.NewBinding(key.WithKeys("pgdown")),
+	PrevPage:       key.NewBinding(key.WithKeys("pgup")),
+	Detail:         key.NewBinding(key.WithKeys("enter")),
+	Help:           key.NewBinding(key.WithKeys("?")),
+	FilterInactive: key.NewBinding(key.WithKeys(".")),
+	Quit:           key.NewBinding(key.WithKeys("esc", "ctrl+c")),
 }
 
 func buildHelpContent() string {
@@ -50,6 +53,7 @@ func buildHelpContent() string {
 		{"enter", "Show albums/tracks"},
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
+		{".", "Show inactive artists"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
 	}
@@ -88,6 +92,7 @@ type artist struct {
 	id       int64
 	name     string
 	followed bool
+	inactive bool
 }
 
 type modalTrack struct {
@@ -96,39 +101,67 @@ type modalTrack struct {
 	line  string // e.g. "  3. Title"
 }
 
-type modalData struct {
-	artistName string
-	content    string       // pre-rendered for help modal
-	tracks     []modalTrack // nil for help modal
-	cursor     int
-}
+type modalKind int
 
-func (md *modalData) interactive() bool {
-	return md.tracks != nil
+const (
+	modalHelp modalKind = iota
+	modalDiscography
+	modalConfirmFetch
+)
+
+type modalData struct {
+	kind       modalKind
+	artistName string
+	content    string       // pre-rendered for help/confirm modals
+	tracks     []modalTrack // for discography modal
+	cursor     int
 }
 
 type searchClearMsg int
 
-type Model struct {
-	artists   []artist
-	cursor    int // page-relative index
-	cols      int
-	db        *db.DB
-	musicRoot string
-	paginator paginator.Model
-	modal     *modalData
-	search    string
-	searchGen int
-	width     int
-	height    int
-	err       error
+// FetchInactiveFunc queries MusicBrainz for each artist's inactive status.
+// It should call onProgress for each artist processed and check ctx for cancellation.
+type FetchInactiveFunc func(ctx context.Context, d *db.DB, onProgress func(name string)) (map[int64]bool, error)
+
+type inactiveProgressMsg struct{ name string }
+type inactiveDataMsg struct {
+	inactive map[int64]bool
+	err      error
 }
 
-func New(d *db.DB, musicRoot string) Model {
+type Model struct {
+	allArtists     []artist // full list from DB
+	artists        []artist // currently visible (filtered)
+	cursor         int      // page-relative index
+	cols           int
+	db             *db.DB
+	musicRoot      string
+	fetchInactive  FetchInactiveFunc
+	fetchCancel    context.CancelFunc
+	paginator      paginator.Model
+	modal          *modalData
+	spinner        spinner.Model
+	search         string
+	searchGen      int
+	filterInactive bool
+	fetching       bool
+	width          int
+	height         int
+	err            error
+}
+
+func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc) Model {
 	p := paginator.New()
 	p.Type = paginator.Arabic
 	p.PerPage = 1
-	return Model{db: d, musicRoot: musicRoot, cols: 3, paginator: p}
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, spinner: sp, cols: 3, paginator: p}
+}
+
+// Err returns any error that caused the TUI to exit.
+func (m Model) Err() error {
+	return m.err
 }
 
 func (m Model) Init() tea.Cmd {
@@ -142,7 +175,7 @@ func (m Model) loadArtists() tea.Msg {
 	}
 	artists := make([]artist, len(rows))
 	for i, r := range rows {
-		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1}
+		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1}
 	}
 	return artistsMsg(artists)
 }
@@ -157,7 +190,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.updatePagination()
 	case artistsMsg:
-		m.artists = []artist(msg)
+		m.allArtists = []artist(msg)
+		m.applyFilter()
 		m.cursor = 0
 		m.updatePagination()
 	case errMsg:
@@ -167,6 +201,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if int(msg) == m.searchGen {
 			m.search = ""
 		}
+	case spinner.TickMsg:
+		if m.fetching {
+			var cmd tea.Cmd
+			m.spinner, cmd = m.spinner.Update(msg)
+			return m, cmd
+		}
+	case inactiveProgressMsg:
+		if m.modal != nil && m.modal.kind == modalConfirmFetch {
+			m.modal.content = m.spinner.View() + " " + msg.name
+		}
+	case inactiveDataMsg:
+		m.fetching = false
+		m.fetchCancel = nil
+		if msg.err != nil {
+			if !strings.Contains(msg.err.Error(), "context canceled") {
+				m.modal = &modalData{kind: modalHelp, artistName: "Error", content: fmt.Sprintf("Failed to fetch inactive data: %v", msg.err)}
+			} else {
+				m.modal = nil
+			}
+			return m, nil
+		}
+		for i := range m.allArtists {
+			if inactive, ok := msg.inactive[m.allArtists[i].id]; ok {
+				m.allArtists[i].inactive = inactive
+			}
+		}
+		m.modal = nil
+		m.filterInactive = true
+		m.applyFilter()
+		m.cursor = 0
+		m.paginator.Page = 0
+		m.updatePagination()
 	case tea.KeyPressMsg:
 		if m.modal != nil {
 			return m.handleModalKey(msg)
@@ -177,28 +243,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	if !m.modal.interactive() {
-		// Help modal: any key dismisses.
+	switch m.modal.kind {
+	case modalHelp:
 		m.modal = nil
-		return m, nil
-	}
 
-	switch {
-	case key.Matches(msg, keys.Up):
-		if m.modal.cursor > 0 {
-			m.modal.cursor--
+	case modalConfirmFetch:
+		if m.fetching {
+			if key.Matches(msg, keys.Quit) && m.fetchCancel != nil {
+				m.fetchCancel()
+			}
+			return m, nil
 		}
-	case key.Matches(msg, keys.Down):
-		if m.modal.cursor < len(m.modal.tracks)-1 {
-			m.modal.cursor++
+		switch {
+		case key.Matches(msg, keys.Detail):
+			m.fetching = true
+			m.modal = &modalData{
+				kind:       modalConfirmFetch,
+				artistName: "Fetching Inactive Status",
+				content:    m.spinner.View() + " Starting...",
+			}
+			return m, tea.Batch(m.spinner.Tick, m.startFetch())
+		case key.Matches(msg, keys.Quit):
+			m.modal = nil
 		}
-	case key.Matches(msg, keys.Detail):
-		if len(m.modal.tracks) > 0 {
-			t := m.modal.tracks[m.modal.cursor]
-			openFile(filepath.Join(m.musicRoot, t.path))
+
+	case modalDiscography:
+		switch {
+		case key.Matches(msg, keys.Up):
+			if m.modal.cursor > 0 {
+				m.modal.cursor--
+			}
+		case key.Matches(msg, keys.Down):
+			if m.modal.cursor < len(m.modal.tracks)-1 {
+				m.modal.cursor++
+			}
+		case key.Matches(msg, keys.Detail):
+			if len(m.modal.tracks) > 0 {
+				t := m.modal.tracks[m.modal.cursor]
+				openFile(filepath.Join(m.musicRoot, t.path))
+			}
+		case key.Matches(msg, keys.Quit):
+			m.modal = nil
 		}
-	case key.Matches(msg, keys.Quit):
-		m.modal = nil
 	}
 	return m, nil
 }
@@ -214,6 +300,34 @@ func openFile(path string) {
 		cmd = exec.Command("xdg-open", path)
 	}
 	_ = cmd.Start()
+}
+
+func (m *Model) startFetch() tea.Cmd {
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated esc
+	m.fetchCancel = cancel
+
+	return func() tea.Msg {
+		result, err := m.fetchInactive(ctx, m.db, func(name string) {
+			// This runs in the fetch goroutine; we can't send tea.Msg directly,
+			// but we update the modal content field which View() reads.
+			// The spinner tick will trigger a re-render.
+			m.modal.content = m.spinner.View() + " " + name
+		})
+		return inactiveDataMsg{inactive: result, err: err}
+	}
+}
+
+func (m *Model) applyFilter() {
+	if !m.filterInactive {
+		m.artists = m.allArtists
+		return
+	}
+	m.artists = nil
+	for _, a := range m.allArtists {
+		if a.inactive {
+			m.artists = append(m.artists, a)
+		}
+	}
 }
 
 func (m *Model) updatePagination() {
@@ -311,6 +425,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				followed = 1
 			}
 			_ = m.db.Q.SetFollowed(context.Background(), followed, a.id)
+			// Sync back to allArtists.
+			for i := range m.allArtists {
+				if m.allArtists[i].id == a.id {
+					m.allArtists[i].followed = a.followed
+					break
+				}
+			}
 
 			itemsOnPage := m.paginator.ItemsOnPage(len(m.artists))
 			if m.cursor < itemsOnPage-1 {
@@ -325,6 +446,40 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.artists) > 0 {
 			a := m.artists[m.globalIndex()]
 			m.modal = m.buildDiscographyModal(a)
+		}
+
+	case key.Matches(msg, keys.FilterInactive):
+		if m.filterInactive {
+			// Toggle off.
+			m.filterInactive = false
+			m.applyFilter()
+			m.cursor = 0
+			m.paginator.Page = 0
+			m.updatePagination()
+		} else {
+			// Check if ended data exists.
+			hasInactive := false
+			for _, a := range m.allArtists {
+				if a.inactive {
+					hasInactive = true
+					break
+				}
+			}
+			if hasInactive {
+				m.filterInactive = true
+				m.applyFilter()
+				m.cursor = 0
+				m.paginator.Page = 0
+				m.updatePagination()
+			} else {
+				m.modal = &modalData{
+					kind:       modalConfirmFetch,
+					artistName: "Inactive Dates Not Available",
+					content: "Artist inactive (deceased or disbanded) dates have not yet been retrieved.\n\n" +
+						helpKeyStyle.Render("enter") + "  Fetch from MusicBrainz (1 artist/sec)\n" +
+						helpKeyStyle.Render("esc") + "    Cancel",
+				}
+			}
 		}
 
 	case key.Matches(msg, keys.Help):
@@ -395,6 +550,7 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 	}
 
 	return &modalData{
+		kind:       modalDiscography,
 		artistName: a.name,
 		tracks:     allTracks,
 		cursor:     0,
@@ -526,6 +682,9 @@ func (m Model) View() tea.View {
 			helpKeyStyle.Render("?") + helpStyle.Render(" help | ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" quit  "+m.paginator.View())
 	}
+	if m.filterInactive {
+		helpText = searchStyle.Render("INACTIVE") + helpStyle.Render(" (. to clear)  "+m.paginator.View())
+	}
 	content := body + "\n\n" + helpText
 
 	if m.modal != nil {
@@ -540,13 +699,17 @@ func (m Model) View() tea.View {
 
 		var inner string
 		title := modalTitleStyle.Render(m.modal.artistName)
-		if m.modal.interactive() {
+		switch m.modal.kind {
+		case modalDiscography:
 			body := m.renderDiscographyContent(m.modal)
 			footer := helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
 				helpKeyStyle.Render("enter") + helpStyle.Render(" open | ") +
 				helpKeyStyle.Render("esc") + helpStyle.Render(" close")
 			inner = title + "\n\n" + body + "\n" + footer
-		} else {
+		case modalConfirmFetch:
+			footer := "\n" + helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
+			inner = title + "\n\n" + m.modal.content + footer
+		default:
 			footer := helpStyle.Render("Press any key to close")
 			inner = title + "\n\n" + m.modal.content + "\n" + footer
 		}

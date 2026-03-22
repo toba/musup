@@ -10,7 +10,7 @@ import (
 )
 
 const albumArtists = `-- name: AlbumArtists :many
-SELECT ar.id, ar.name, ar.followed
+SELECT ar.id, ar.name, ar.followed, ar.inactive
 FROM artists ar
 WHERE ar.id IN (
     SELECT artist_id FROM files
@@ -25,6 +25,7 @@ type AlbumArtistsRow struct {
 	ID       int64
 	Name     string
 	Followed int64
+	Inactive int64
 }
 
 // All album artists with their followed status, for the TUI.
@@ -37,7 +38,12 @@ func (q *Queries) AlbumArtists(ctx context.Context) ([]AlbumArtistsRow, error) {
 	var items []AlbumArtistsRow
 	for rows.Next() {
 		var i AlbumArtistsRow
-		if err := rows.Scan(&i.ID, &i.Name, &i.Followed); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Followed,
+			&i.Inactive,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -132,6 +138,15 @@ UPDATE artists SET followed = ? WHERE id = ?
 
 func (q *Queries) SetFollowed(ctx context.Context, followed int64, iD int64) error {
 	_, err := q.db.ExecContext(ctx, setFollowed, followed, iD)
+	return err
+}
+
+const setInactive = `-- name: SetInactive :exec
+UPDATE artists SET inactive = ? WHERE id = ?
+`
+
+func (q *Queries) SetInactive(ctx context.Context, inactive int64, iD int64) error {
+	_, err := q.db.ExecContext(ctx, setInactive, inactive, iD)
 	return err
 }
 

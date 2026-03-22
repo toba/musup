@@ -18,7 +18,7 @@ UPDATE artists SET not_found = 1 WHERE id = ?;
 
 -- name: AlbumArtists :many
 -- All album artists with their followed status, for the TUI.
-SELECT ar.id, ar.name, ar.followed
+SELECT ar.id, ar.name, ar.followed, ar.inactive
 FROM artists ar
 WHERE ar.id IN (
     SELECT artist_id FROM files
@@ -34,3 +34,6 @@ FROM artists WHERE id = ?;
 
 -- name: SetFollowed :exec
 UPDATE artists SET followed = ? WHERE id = ?;
+
+-- name: SetInactive :exec
+UPDATE artists SET inactive = ? WHERE id = ?;

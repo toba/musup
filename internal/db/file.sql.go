@@ -127,8 +127,10 @@ func (q *Queries) DeleteFileByPath(ctx context.Context, path string) error {
 }
 
 const distinctArtistIDs = `-- name: DistinctArtistIDs :many
-SELECT DISTINCT artist_id FROM files
-WHERE artist != '' AND is_album_artist = 1 AND artist_id != 0
+SELECT DISTINCT f.artist_id FROM files f
+JOIN artists a ON a.id = f.artist_id
+WHERE f.artist != '' AND f.is_album_artist = 1 AND f.artist_id != 0
+  AND a.followed = 1
 `
 
 func (q *Queries) DistinctArtistIDs(ctx context.Context) ([]int64, error) {
