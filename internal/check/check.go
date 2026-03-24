@@ -17,6 +17,7 @@ const (
 	mbMaxReleaseGroups         = 500
 	mbMaxReleaseGroupsComposer = 100
 	composerTag                = "composer"
+	releaseTypeAlbum           = "album"
 )
 
 // Progress is sent via the callback to report sync progress.
@@ -79,6 +80,11 @@ func SyncAll(ctx context.Context, d *db.DB, mb *musicbrainz.Client, staleAfter t
 	return nil
 }
 
+// SyncArtist syncs a single artist's releases from MusicBrainz.
+func SyncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID int64) error {
+	return syncArtist(ctx, d, mb, artistID)
+}
+
 func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID int64) error {
 	row, err := d.Q.GetArtistByID(ctx, artistID)
 	if err != nil {
@@ -119,7 +125,7 @@ func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID 
 }
 
 func fetchAndStoreAlbums(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID int64, mbid string, rgCap int) error {
-	rgResult, err := mb.AllReleaseGroups(ctx, mbid, "album", rgCap)
+	rgResult, err := mb.AllReleaseGroups(ctx, mbid, releaseTypeAlbum, rgCap)
 	if err != nil {
 		return fmt.Errorf("fetch release groups: %w", err)
 	}

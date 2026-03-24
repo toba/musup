@@ -390,8 +390,8 @@ func TestMigrationFromV0(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 17 {
-		t.Fatalf("expected user_version 16, got %d", version)
+	if version != 20 {
+		t.Fatalf("expected user_version 20, got %d", version)
 	}
 }
 
@@ -416,8 +416,8 @@ func TestMigrationIdempotent(t *testing.T) {
 	if err := db2.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read user_version: %v", err)
 	}
-	if version != 17 {
-		t.Fatalf("expected user_version 16, got %d", version)
+	if version != 20 {
+		t.Fatalf("expected user_version 20, got %d", version)
 	}
 }
 
@@ -628,8 +628,8 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 	if err := db.db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatalf("read version: %v", err)
 	}
-	if version != 17 {
-		t.Fatalf("expected version 15, got %d", version)
+	if version != 20 {
+		t.Fatalf("expected version 20, got %d", version)
 	}
 
 	var artistCount int
@@ -640,12 +640,22 @@ func TestMigrationV7toV8_WithData(t *testing.T) {
 		t.Fatalf("expected 1 artist after dedup, got %d", artistCount)
 	}
 
+	// v18 deletes all albums (re-fetch with website-default filter).
 	var albumCount int
 	if err := db.db.QueryRow("SELECT COUNT(*) FROM albums").Scan(&albumCount); err != nil {
 		t.Fatalf("count albums: %v", err)
 	}
-	if albumCount != 2 {
-		t.Fatalf("expected 2 albums (OK Computer, Kid A), got %d", albumCount)
+	if albumCount != 0 {
+		t.Fatalf("expected 0 albums after v18 migration, got %d", albumCount)
+	}
+
+	// v18 clears last_checked_at so artists get re-synced.
+	var lastChecked string
+	if err := db.db.QueryRow("SELECT last_checked_at FROM artists").Scan(&lastChecked); err != nil {
+		t.Fatalf("read last_checked_at: %v", err)
+	}
+	if lastChecked != "" {
+		t.Fatalf("expected empty last_checked_at after v18, got %q", lastChecked)
 	}
 
 	// Tracks table should be dropped by v13.

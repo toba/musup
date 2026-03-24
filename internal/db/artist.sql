@@ -18,7 +18,7 @@ UPDATE artists SET not_found = 1 WHERE id = ?;
 
 -- name: AlbumArtists :many
 -- All album artists with their followed status, for the TUI.
-SELECT ar.id, ar.name, ar.followed, ar.inactive,
+SELECT ar.id, ar.name, ar.followed, ar.inactive, ar.reviewed_at,
        CAST(COALESCE((SELECT MAX(al.release_date) FROM albums al WHERE al.artist_id = ar.id), '') AS TEXT) AS latest_release
 FROM artists ar
 WHERE ar.id IN (
@@ -43,3 +43,6 @@ UPDATE artists SET followed = ? WHERE id = ?;
 
 -- name: SetInactive :exec
 UPDATE artists SET inactive = ? WHERE id = ?;
+
+-- name: SetReviewedAt :exec
+UPDATE artists SET reviewed_at = ? WHERE id = ?;

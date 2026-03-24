@@ -304,6 +304,41 @@ func (d *DB) migrate() error {
 		version = 17
 	}
 
+	// Version 17 → 18: clear albums and reset last_checked_at so next check
+	// re-fetches with release-group-status=website-default filter (excludes
+	// release-groups with only promo/bootleg/pseudo-release status).
+	if version < 18 {
+		if _, err := d.db.Exec("DELETE FROM albums"); err != nil {
+			return err
+		}
+		if _, err := d.db.Exec("UPDATE artists SET last_checked_at = ''"); err != nil {
+			return err
+		}
+		version = 18
+	}
+
+	// Version 18 → 19: add reviewed_at to artists for "caught up" tracking.
+	if version < 19 {
+		if err := d.addColumnIfMissing("artists", "reviewed_at", "TEXT NOT NULL DEFAULT ''"); err != nil {
+			return err
+		}
+		version = 19
+	}
+
+	// Version 19 → 20: add settings table with default search_url.
+	if version < 20 {
+		if _, err := d.db.Exec(`
+			CREATE TABLE IF NOT EXISTS settings (
+				key   TEXT PRIMARY KEY,
+				value TEXT NOT NULL DEFAULT ''
+			);
+			INSERT OR IGNORE INTO settings (key, value) VALUES ('search_url', 'https://www.allmusic.com/search/artists/%s');
+		`); err != nil {
+			return err
+		}
+		version = 20
+	}
+
 	_, err := d.db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
 	return err
 }
@@ -475,50 +510,40 @@ func (d *DB) migrateToIntegerPKs() error {
 	return tx.Commit()
 }
 
-func (d *DB) dropColumnIfExists(table, column string) error { //nolint:unparam // table varies across migration versions
+func (d *DB) columnExists(table, column string) (bool, error) {
 	var count int
 	err := d.db.QueryRow(
 		fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column),
 	).Scan(&count)
+	return count > 0, err
+}
+
+func (d *DB) dropColumnIfExists(table, column string) error { //nolint:unparam // table varies across migration versions
+	exists, err := d.columnExists(table, column)
 	if err != nil {
 		return err
 	}
-	if count > 0 {
+	if exists {
 		_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column))
-		if err != nil {
-			return err
-		}
 	}
-	return nil
+	return err
 }
 
 func (d *DB) addColumnIfMissing(table, column, colDef string) error {
-	var count int
-	err := d.db.QueryRow(
-		fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = '%s'", table, column),
-	).Scan(&count)
+	exists, err := d.columnExists(table, column)
 	if err != nil {
 		return err
 	}
-	if count == 0 {
+	if !exists {
 		_, err = d.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, colDef))
-		if err != nil {
-			return err
-		}
 	}
-	return nil
+	return err
 }
 
 func (d *DB) dropAlbumsLocalColumn() error {
-	var count int
-	err := d.db.QueryRow(
-		"SELECT COUNT(*) FROM pragma_table_info('albums') WHERE name = 'local'",
-	).Scan(&count)
-	if err != nil {
+	exists, err := d.columnExists("albums", "local")
+	if err != nil || !exists {
 		return err
-	}
-	if count == 0 {
-		return nil
 	}
 	const migration = `
 	CREATE TABLE albums_new (

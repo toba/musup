@@ -21,12 +21,15 @@ type Querier interface {
 	FollowedNewerReleases(ctx context.Context) ([]FollowedNewerReleasesRow, error)
 	GetArtistByID(ctx context.Context, id int64) (GetArtistByIDRow, error)
 	GetArtistByNameNorm(ctx context.Context, nameNorm string) (GetArtistByNameNormRow, error)
+	GetSetting(ctx context.Context, key string) (string, error)
 	InsertArtist(ctx context.Context, name string, nameNorm string) (int64, error)
 	MarkArtistNotFound(ctx context.Context, id int64) error
 	// Artists with MB albums released since cutoff that are newer than the latest local album.
 	NewerReleases(ctx context.Context, releaseDate string) ([]NewerReleasesRow, error)
 	SetFollowed(ctx context.Context, followed int64, iD int64) error
 	SetInactive(ctx context.Context, inactive int64, iD int64) error
+	SetReviewedAt(ctx context.Context, reviewedAt string, iD int64) error
+	SetSetting(ctx context.Context, key string, value string) error
 	UpdateArtistFull(ctx context.Context, mbid string, lastCheckedAt string, notFound int64, iD int64) error
 	UpdateArtistMeta(ctx context.Context, mbid string, lastCheckedAt string, iD int64) error
 	UpsertAlbum(ctx context.Context, arg UpsertAlbumParams) error

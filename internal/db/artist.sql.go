@@ -10,7 +10,7 @@ import (
 )
 
 const albumArtists = `-- name: AlbumArtists :many
-SELECT ar.id, ar.name, ar.followed, ar.inactive,
+SELECT ar.id, ar.name, ar.followed, ar.inactive, ar.reviewed_at,
        CAST(COALESCE((SELECT MAX(al.release_date) FROM albums al WHERE al.artist_id = ar.id), '') AS TEXT) AS latest_release
 FROM artists ar
 WHERE ar.id IN (
@@ -32,6 +32,7 @@ type AlbumArtistsRow struct {
 	Name          string
 	Followed      int64
 	Inactive      int64
+	ReviewedAt    string
 	LatestRelease string
 }
 
@@ -50,6 +51,7 @@ func (q *Queries) AlbumArtists(ctx context.Context) ([]AlbumArtistsRow, error) {
 			&i.Name,
 			&i.Followed,
 			&i.Inactive,
+			&i.ReviewedAt,
 			&i.LatestRelease,
 		); err != nil {
 			return nil, err
@@ -155,6 +157,15 @@ UPDATE artists SET inactive = ? WHERE id = ?
 
 func (q *Queries) SetInactive(ctx context.Context, inactive int64, iD int64) error {
 	_, err := q.db.ExecContext(ctx, setInactive, inactive, iD)
+	return err
+}
+
+const setReviewedAt = `-- name: SetReviewedAt :exec
+UPDATE artists SET reviewed_at = ? WHERE id = ?
+`
+
+func (q *Queries) SetReviewedAt(ctx context.Context, reviewedAt string, iD int64) error {
+	_, err := q.db.ExecContext(ctx, setReviewedAt, reviewedAt, iD)
 	return err
 }
 

@@ -1,6 +1,6 @@
 # musup
 
-CLI that scans a folder of music files and reports which artists have released new albums.
+TUI that scans a folder of music files, catalogs artists, and checks MusicBrainz for new releases.
 
 ## Rules
 
@@ -31,9 +31,9 @@ scripts/lint.sh        # golangci-lint with auto-fix, then report remaining issu
 
 ## Architecture
 
-- `cmd/` — Cobra commands
-  - `scan` — scan a music folder and extract artist names from file metadata
-  - `check` — check for new releases from artists in your library
-  - `version` — print version info
+- `cmd/` — CLI entry point (flag parsing, dependency wiring)
+- `internal/tui/` — Bubble Tea TUI (artist browser, discography pane, sync/scan UI)
 - `internal/scan/` — music file scanning and metadata extraction
-- `internal/releases/` — new release lookup (MusicBrainz, etc.)
+- `internal/check/` — MusicBrainz release sync and inactive status lookup
+- `internal/db/` — SQLite database, migrations, sqlc-generated queries
+- `internal/integration/musicbrainz/` — rate-limited MusicBrainz WS2 client

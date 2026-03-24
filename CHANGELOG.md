@@ -10,6 +10,10 @@
 - Add `*` shortcut for new releases check in TUI ([#66](https://github.com/toba/musup/issues/66))
 - `/` key toggles un-followed artist filtering in artist list view ([#73](https://github.com/toba/musup/issues/73))
 - Replace third column with always-visible local discography pane ([#74](https://github.com/toba/musup/issues/74))
+- Replace `*` key new-releases mode with inline background sync ([#81](https://github.com/toba/musup/issues/81))
+- `,` key marks artist as caught up on releases ([#77](https://github.com/toba/musup/issues/77))
+- Remove subcommands; TUI-only with auto-scan on startup ([#80](https://github.com/toba/musup/issues/80))
+- `enter` opens artist search URL; settings table for configuration ([#76](https://github.com/toba/musup/issues/76))
 
 ### 🐛 Fixes
 
@@ -25,6 +29,8 @@
 - Debounce pinned modal refresh ([#67](https://github.com/toba/musup/issues/67))
 - Style discography modal title to match artist list ([#70](https://github.com/toba/musup/issues/70))
 - Filter MB browse to official releases only ([#75](https://github.com/toba/musup/issues/75))
+- Clear stale album data after `website-default` filter change ([#79](https://github.com/toba/musup/issues/79))
+- Apply `goptimize` findings; extract helpers and constants; add check package tests ([#78](https://github.com/toba/musup/issues/78))
 
 ## Week of Mar 15 – Mar 21, 2026
 

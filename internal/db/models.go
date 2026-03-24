@@ -24,6 +24,7 @@ type Artist struct {
 	NotFound      int64
 	Followed      int64
 	Inactive      int64
+	ReviewedAt    string
 }
 
 type File struct {
@@ -40,4 +41,9 @@ type File struct {
 	TrackNumber   int64
 	IsAlbumArtist int64
 	ScannedAt     string
+}
+
+type Setting struct {
+	Key   string
+	Value string
 }

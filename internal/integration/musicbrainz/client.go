@@ -12,11 +12,14 @@ import (
 	"golang.org/x/time/rate"
 )
 
-const defaultBaseURL = "https://musicbrainz.org/ws/2"
+const (
+	defaultBaseURL = "https://musicbrainz.org/ws/2"
+	httpTimeout    = 15 * time.Second
 
-// releaseGroupStatusDefault filters out release-groups containing only
-// promotional, bootleg, or pseudo-release status releases.
-const releaseGroupStatusDefault = "website-default"
+	// releaseGroupStatusDefault filters out release-groups containing only
+	// promotional, bootleg, or pseudo-release status releases.
+	releaseGroupStatusDefault = "website-default"
+)
 
 // Client is a rate-limited MusicBrainz WS2 JSON client.
 type Client struct {
@@ -36,7 +39,7 @@ func New(appName, version, contact string) *Client {
 func NewWithBase(base, appName, version, contact string) *Client {
 	return &Client{
 		base:      base,
-		http:      &http.Client{Timeout: 15 * time.Second},
+		http:      &http.Client{Timeout: httpTimeout},
 		userAgent: fmt.Sprintf("%s/%s ( %s )", appName, version, contact),
 		limiter:   rate.NewLimiter(rate.Every(time.Second), 1),
 	}

@@ -63,9 +63,12 @@ func buildHelpContent() string {
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
+		{"enter", "Search artist"},
 		{"=", "Toggle tracks"},
-		{"*", "Check for new releases"},
+		{"*", "Sync releases"},
+		{",", "Mark caught up"},
 		{"/", "Show only followed"},
+		{"-", "Vacuum database"},
 		{".", "Show inactive artists"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
@@ -103,12 +106,15 @@ var (
 	datePrefixRe    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[:\s]\s*`)
 )
 
+const dateFormat = "2006-01-02"
+
 type artist struct {
 	id            int64
 	name          string
 	followed      bool
 	inactive      bool
 	latestRelease string
+	reviewedAt    string
 }
 
 type modalTrack struct {
@@ -124,7 +130,6 @@ const (
 	modalHelp modalKind = iota
 	modalDiscography
 	modalConfirmFetch
-	modalNewReleases
 )
 
 type modalData struct {
@@ -143,6 +148,12 @@ type discogRefreshMsg int
 // FetchInactiveFunc queries MusicBrainz for each artist's inactive status.
 // It should call onProgress for each artist processed and check ctx for cancellation.
 type FetchInactiveFunc func(ctx context.Context, d *db.DB, onProgress func(name string)) (map[int64]bool, error)
+
+// SyncArtistFunc syncs one artist's releases from MusicBrainz.
+type SyncArtistFunc func(ctx context.Context, d *db.DB, artistID int64) error
+
+// ScanFunc scans the music root for files and updates the database.
+type ScanFunc func(ctx context.Context, d *db.DB) error
 
 type fetchState struct {
 	mu   sync.Mutex
@@ -166,44 +177,63 @@ type inactiveDataMsg struct {
 	err      error
 }
 
-type Model struct {
-	allArtists      []artist // full list from DB
-	artists         []artist // currently visible (filtered)
-	cursor          int      // page-relative index
-	cols            int
-	db              *db.DB
-	musicRoot       string
-	fetchInactive   FetchInactiveFunc
-	fetchCancel     context.CancelFunc
-	fetchProgress   *fetchState
-	paginator       paginator.Model
-	modal           *modalData
-	spinner         spinner.Model
-	search          string
-	searchGen       int
-	filterInactive  bool
-	hideUnfollowed  bool
-	yearInput       string
-	yearInputGen    int
-	discog          *modalData
-	discogGen       int
-	showTracks      bool
-	filterYears     int
-	newReleases     map[int64][]db.FollowedNewerReleasesRow
-	newReleasesMode bool
-	fetching        bool
-	width           int
-	height          int
-	err             error
+type syncArtistDoneMsg struct {
+	artistID int64
+	err      error
 }
 
-func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc) Model {
+type scanDoneMsg struct{ err error }
+type scanRefreshMsg int
+type vacuumDoneMsg struct{ err error }
+
+type Model struct {
+	allArtists     []artist // full list from DB
+	artists        []artist // currently visible (filtered)
+	cursor         int      // page-relative index
+	cols           int
+	db             *db.DB
+	musicRoot      string
+	fetchInactive  FetchInactiveFunc
+	fetchCancel    context.CancelFunc
+	fetchProgress  *fetchState
+	syncArtistFn   SyncArtistFunc
+	scanFn         ScanFunc
+	scanning       bool
+	scanGen        int
+	syncCtx        context.Context //nolint:containedctx // needed for cancellation across tea.Cmd chain
+	syncCancel     context.CancelFunc
+	syncQueue      []int64 // artist IDs remaining to sync
+	syncCurrentID  int64   // artist being synced right now (0 = none)
+	syncTotal      int
+	syncDone       int
+	paginator      paginator.Model
+	modal          *modalData
+	spinner        spinner.Model
+	search         string
+	searchGen      int
+	filterInactive bool
+	hideUnfollowed bool
+	yearInput      string
+	yearInputGen   int
+	discog         *modalData
+	discogGen      int
+	showTracks     bool
+	filterYears    int
+	newReleases    map[int64][]db.FollowedNewerReleasesRow
+	searchURL      string
+	fetching       bool
+	width          int
+	height         int
+	err            error
+}
+
+func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc, syncArtist SyncArtistFunc, scanFn ScanFunc) Model {
 	p := paginator.New()
 	p.Type = paginator.Arabic
 	p.PerPage = 1
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, spinner: sp, cols: 2, paginator: p}
+	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, syncArtistFn: syncArtist, scanFn: scanFn, scanning: true, spinner: sp, cols: 2, paginator: p}
 }
 
 // Err returns any error that caused the TUI to exit.
@@ -212,7 +242,24 @@ func (m Model) Err() error {
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.loadArtists
+	return tea.Batch(m.loadArtists, m.startScan(), m.spinner.Tick)
+}
+
+func (m *Model) startScan() tea.Cmd {
+	scanFn := m.scanFn
+	d := m.db
+	return func() tea.Msg {
+		err := scanFn(context.Background(), d)
+		return scanDoneMsg{err: err}
+	}
+}
+
+func (m *Model) scheduleScanRefresh() tea.Cmd {
+	m.scanGen++
+	gen := m.scanGen
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return scanRefreshMsg(gen)
+	})
 }
 
 func (m Model) loadArtists() tea.Msg {
@@ -222,7 +269,7 @@ func (m Model) loadArtists() tea.Msg {
 	}
 	artists := make([]artist, len(rows))
 	for i, r := range rows {
-		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1, latestRelease: r.LatestRelease}
+		artists[i] = artist{id: r.ID, name: r.Name, followed: r.Followed == 1, inactive: r.Inactive == 1, latestRelease: r.LatestRelease, reviewedAt: r.ReviewedAt}
 	}
 	var nr map[int64][]db.FollowedNewerReleasesRow
 	if nrRows, nrErr := m.db.Q.FollowedNewerReleases(context.Background()); nrErr == nil && len(nrRows) > 0 {
@@ -231,14 +278,20 @@ func (m Model) loadArtists() tea.Msg {
 			nr[r.ArtistID] = append(nr[r.ArtistID], r)
 		}
 	}
-	return artistsMsg{artists: artists, newReleases: nr}
+	searchURL, _ := m.db.Q.GetSetting(context.Background(), "search_url")
+	return artistsMsg{artists: artists, newReleases: nr, searchURL: searchURL}
 }
 
 type artistsMsg struct {
 	artists     []artist
 	newReleases map[int64][]db.FollowedNewerReleasesRow
+	searchURL   string
 }
 type errMsg struct{ err error }
+
+func (m *Model) syncing() bool {
+	return m.syncCurrentID != 0 || len(m.syncQueue) > 0
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -247,20 +300,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		m.updatePagination()
 	case artistsMsg:
+		prevLen := len(m.allArtists)
 		m.allArtists = msg.artists
 		m.newReleases = msg.newReleases
+		if msg.searchURL != "" {
+			m.searchURL = msg.searchURL
+		}
+		hasFollowed := false
 		for _, a := range m.allArtists {
 			if a.followed {
-				m.hideUnfollowed = true
+				hasFollowed = true
 				break
 			}
 		}
+		m.hideUnfollowed = hasFollowed
 		m.applyFilter()
-		m.cursor = 0
+		if prevLen == 0 {
+			m.cursor = 0
+		}
 		m.updatePagination()
 		if len(m.artists) > 0 {
-			m.discog = m.buildDiscographyModal(m.artists[0])
+			m.discog = m.buildDiscographyModal(m.artists[m.globalIndex()])
 		}
+		var cmds []tea.Cmd
+		if m.scanning {
+			cmds = append(cmds, m.scheduleScanRefresh())
+		}
+		return m, tea.Batch(cmds...)
 	case errMsg:
 		m.err = msg.err
 		return m, tea.Quit
@@ -285,8 +351,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a := m.artists[m.globalIndex()]
 			m.discog = m.buildDiscographyModal(a)
 		}
+	case scanRefreshMsg:
+		if m.scanning && int(msg) == m.scanGen {
+			return m, m.loadArtists
+		}
+	case scanDoneMsg:
+		m.scanning = false
+		return m, m.loadArtists
+	case vacuumDoneMsg:
+		// Vacuum runs silently; nothing to update.
 	case spinner.TickMsg:
-		if m.fetching {
+		if m.fetching || m.syncCurrentID != 0 || m.scanning {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -316,6 +391,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.artists) > 0 {
 			m.discog = m.buildDiscographyModal(m.artists[0])
 		}
+	case syncArtistDoneMsg:
+		if !m.syncing() {
+			return m, nil
+		}
+		m.syncDone++
+		m.syncCurrentID = 0
+		m.refreshNewReleases()
+		if len(m.syncQueue) > 0 {
+			return m, m.syncNextArtist()
+		}
+		// All done.
+		m.syncCancel = nil
+		m.syncCtx = nil
+		if len(m.artists) > 0 {
+			m.discog = m.buildDiscographyModal(m.artists[m.globalIndex()])
+		}
+		return m, nil
 	case tea.KeyPressMsg:
 		if m.modal != nil {
 			return m.handleModalKey(msg)
@@ -329,25 +421,6 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.modal.kind {
 	case modalHelp:
 		m.modal = nil
-
-	case modalNewReleases:
-		switch {
-		case key.Matches(msg, keys.Up):
-			if m.modal.cursor > 0 {
-				m.modal.cursor--
-			}
-		case key.Matches(msg, keys.Down):
-			if m.modal.cursor < len(m.modal.tracks)-1 {
-				m.modal.cursor++
-			}
-		case msg.Key().Code == tea.KeyEnter:
-			if len(m.modal.tracks) > 0 {
-				t := m.modal.tracks[m.modal.cursor]
-				searchWeb(fmt.Sprintf("%q %s", m.modal.artistName, t.album))
-			}
-		case key.Matches(msg, keys.Quit):
-			m.modal = nil
-		}
 
 	case modalConfirmFetch:
 		if m.fetching {
@@ -372,22 +445,18 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func openFile(path string) {
-	var cmd *exec.Cmd
+func openSearchURL(urlTemplate, artistName string) {
+	u := fmt.Sprintf(urlTemplate, url.PathEscape(artistName))
+	var c *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("open", path)
+		c = exec.Command("open", u)
 	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", path)
+		c = exec.Command("cmd", "/c", "start", "", u)
 	default:
-		cmd = exec.Command("xdg-open", path)
+		c = exec.Command("xdg-open", u)
 	}
-	_ = cmd.Start()
-}
-
-func searchWeb(query string) {
-	u := "https://www.google.com/search?q=" + url.QueryEscape(query)
-	openFile(u)
+	_ = c.Start()
 }
 
 func (m *Model) startFetch() tea.Cmd {
@@ -406,49 +475,109 @@ func (m *Model) startFetch() tea.Cmd {
 	}
 }
 
+func (m *Model) startReleaseSync() tea.Cmd {
+	staleAfter := 7 * 24 * time.Hour
+	var queue []int64
+	for _, a := range m.allArtists {
+		if !a.followed {
+			continue
+		}
+		row, err := m.db.Q.GetArtistByID(context.Background(), a.id)
+		if err != nil || row.NotFound != 0 {
+			continue
+		}
+		if row.Mbid != "" && row.LastCheckedAt != "" {
+			checked, parseErr := time.Parse(time.RFC3339, row.LastCheckedAt)
+			if parseErr == nil && time.Since(checked) < staleAfter {
+				continue
+			}
+		}
+		queue = append(queue, a.id)
+	}
+	if len(queue) == 0 {
+		m.refreshNewReleases()
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated *
+	m.syncCtx = ctx
+	m.syncCancel = cancel
+	m.syncQueue = queue
+	m.syncTotal = len(queue)
+	m.syncDone = 0
+	return tea.Batch(m.spinner.Tick, m.syncNextArtist())
+}
+
+func (m *Model) syncNextArtist() tea.Cmd {
+	if len(m.syncQueue) == 0 {
+		return nil
+	}
+	id := m.syncQueue[0]
+	m.syncQueue = m.syncQueue[1:]
+	m.syncCurrentID = id
+
+	ctx := m.syncCtx
+	syncFn := m.syncArtistFn
+	d := m.db
+	return func() tea.Msg {
+		err := syncFn(ctx, d, id)
+		return syncArtistDoneMsg{artistID: id, err: err}
+	}
+}
+
+func (m *Model) cancelSync() {
+	if m.syncCancel != nil {
+		m.syncCancel()
+	}
+	m.syncCancel = nil
+	m.syncCtx = nil
+	m.syncQueue = nil
+	m.syncCurrentID = 0
+}
+
+func (m *Model) refreshNewReleases() {
+	nrRows, err := m.db.Q.FollowedNewerReleases(context.Background())
+	if err != nil {
+		return
+	}
+	m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
+	for _, r := range nrRows {
+		m.newReleases[r.ArtistID] = append(m.newReleases[r.ArtistID], r)
+	}
+}
+
+func (m *Model) updateAllArtist(id int64, fn func(*artist)) {
+	for i := range m.allArtists {
+		if m.allArtists[i].id == id {
+			fn(&m.allArtists[i])
+			return
+		}
+	}
+}
+
+func filterArtists(source []artist, pred func(artist) bool) []artist {
+	var out []artist
+	for _, a := range source {
+		if pred(a) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (m *Model) applyFilter() {
 	source := m.allArtists
 
-	if m.newReleasesMode && m.newReleases != nil {
-		var filtered []artist
-		for _, a := range source {
-			if _, ok := m.newReleases[a.id]; ok {
-				filtered = append(filtered, a)
-			}
-		}
-		m.artists = filtered
-		return
-	}
-
 	if m.hideUnfollowed {
-		var filtered []artist
-		for _, a := range source {
-			if a.followed {
-				filtered = append(filtered, a)
-			}
-		}
-		source = filtered
+		source = filterArtists(source, func(a artist) bool { return a.followed })
 	}
-
 	if m.filterInactive {
-		var filtered []artist
-		for _, a := range source {
-			if a.inactive {
-				filtered = append(filtered, a)
-			}
-		}
-		source = filtered
+		source = filterArtists(source, func(a artist) bool { return a.inactive })
 	}
-
 	if m.filterYears > 0 {
-		cutoff := time.Now().AddDate(-m.filterYears, 0, 0).Format("2006-01-02")
-		var filtered []artist
-		for _, a := range source {
-			if a.latestRelease == "" || a.latestRelease < cutoff {
-				filtered = append(filtered, a)
-			}
-		}
-		source = filtered
+		cutoff := time.Now().AddDate(-m.filterYears, 0, 0).Format(dateFormat)
+		source = filterArtists(source, func(a artist) bool {
+			return a.latestRelease == "" || a.latestRelease < cutoff
+		})
 	}
 
 	m.artists = source
@@ -481,15 +610,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, keys.Quit):
-		if m.newReleasesMode {
-			m.newReleasesMode = false
-			m.applyFilter()
-			m.cursor = 0
-			m.paginator.Page = 0
-			m.updatePagination()
-		} else {
-			return m, tea.Quit
+		if m.syncing() {
+			m.cancelSync()
+			return m, nil
 		}
+		return m, tea.Quit
 
 	case key.Matches(msg, keys.PrevFollowed):
 		jumpToFollowed(&m, -1)
@@ -565,13 +690,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				_ = m.db.Q.DeleteAlbumsByArtist(context.Background(), a.id)
 				delete(m.newReleases, a.id)
 			}
-			// Sync back to allArtists.
-			for i := range m.allArtists {
-				if m.allArtists[i].id == a.id {
-					m.allArtists[i].followed = a.followed
-					break
-				}
-			}
+			m.updateAllArtist(a.id, func(aa *artist) { aa.followed = a.followed })
 
 			itemsOnPage := m.paginator.ItemsOnPage(len(m.artists))
 			if m.cursor < itemsOnPage-1 {
@@ -582,12 +701,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case msg.Key().Code == tea.KeyEnter:
-		if m.newReleasesMode && len(m.artists) > 0 {
-			a := m.artists[m.globalIndex()]
-			m.modal = m.buildNewReleasesModal(a)
-		}
-
 	case key.Matches(msg, keys.FilterFollowed):
 		m.hideUnfollowed = !m.hideUnfollowed
 		m.applyFilter()
@@ -595,7 +708,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.paginator.Page = 0
 		m.updatePagination()
 
+	case msg.Key().Code == tea.KeyEnter:
+		if len(m.artists) > 0 && m.searchURL != "" {
+			a := m.artists[m.globalIndex()]
+			openSearchURL(m.searchURL, a.name)
+		}
+
 	case key.Matches(msg, keys.FilterInactive):
+		if m.syncing() {
+			break
+		}
 		if m.filterInactive {
 			// Toggle off.
 			m.filterInactive = false
@@ -639,17 +761,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if r == '=' {
 				m.showTracks = !m.showTracks
 			} else if r == '*' {
-				nrRows, qErr := m.db.Q.FollowedNewerReleases(context.Background())
-				if qErr == nil && len(nrRows) > 0 {
-					m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
-					for _, row := range nrRows {
-						m.newReleases[row.ArtistID] = append(m.newReleases[row.ArtistID], row)
+				if m.syncing() {
+					m.cancelSync()
+				} else if !m.fetching {
+					cmd = m.startReleaseSync()
+				}
+			} else if r == '-' {
+				d := m.db
+				cmd = func() tea.Msg {
+					return vacuumDoneMsg{err: d.Vacuum()}
+				}
+			} else if r == ',' {
+				if len(m.artists) > 0 {
+					gi := m.globalIndex()
+					a := &m.artists[gi]
+					if a.reviewedAt != "" {
+						a.reviewedAt = ""
+					} else {
+						a.reviewedAt = time.Now().Format(dateFormat)
 					}
-					m.newReleasesMode = true
-					m.applyFilter()
-					m.cursor = 0
-					m.paginator.Page = 0
-					m.updatePagination()
+					_ = m.db.Q.SetReviewedAt(context.Background(), a.reviewedAt, a.id)
+					m.updateAllArtist(a.id, func(aa *artist) { aa.reviewedAt = a.reviewedAt })
 				}
 			} else if r >= '0' && r <= '9' {
 				m.yearInput += string(r)
@@ -753,22 +885,6 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 	}
 }
 
-func (m Model) buildNewReleasesModal(a artist) *modalData {
-	releases := m.newReleases[a.id]
-	if len(releases) == 0 {
-		return &modalData{kind: modalNewReleases, artistName: a.name, followed: a.followed, content: "No new releases found."}
-	}
-	var tracks []modalTrack
-	for _, r := range releases {
-		line := albumStyle.Render(r.AlbumTitle) + "  " + mutedStyle.Render(r.ReleaseDate)
-		if r.SecondaryTypes != "" {
-			line += "  " + mutedStyle.Render("["+r.SecondaryTypes+"]")
-		}
-		tracks = append(tracks, modalTrack{album: r.AlbumTitle, line: line})
-	}
-	return &modalData{kind: modalNewReleases, artistName: a.name, followed: a.followed, tracks: tracks, cursor: 0}
-}
-
 func (m Model) rowsPerCol() int {
 	avail := max(
 		// blank line + help bar + padding
@@ -832,17 +948,32 @@ func (m Model) renderPane(width, height int) string {
 	if len(m.artists) > 0 {
 		a := m.artists[m.globalIndex()]
 		if releases, ok := m.newReleases[a.id]; ok && len(releases) > 0 {
-			if len(lines) > 0 {
-				lines = append(lines, "")
-			}
-			lines = append(lines, " "+newReleaseStyle.Render("NEWER RELEASES"))
+			var newer, reviewed []db.FollowedNewerReleasesRow
 			for _, r := range releases {
-				year := ""
-				if len(r.ReleaseDate) >= 4 {
-					year = r.ReleaseDate[:4]
+				if a.reviewedAt != "" && r.ReleaseDate <= a.reviewedAt {
+					reviewed = append(reviewed, r)
+				} else {
+					newer = append(newer, r)
 				}
-				lines = append(lines, renderAlbumLine(year, r.AlbumTitle))
 			}
+			appendReleaseSection := func(heading string, style lipgloss.Style, releases []db.FollowedNewerReleasesRow) {
+				if len(releases) == 0 {
+					return
+				}
+				if len(lines) > 0 {
+					lines = append(lines, "")
+				}
+				lines = append(lines, " "+style.Render(heading))
+				for _, r := range releases {
+					year := ""
+					if len(r.ReleaseDate) >= 4 {
+						year = r.ReleaseDate[:4]
+					}
+					lines = append(lines, renderAlbumLine(year, r.AlbumTitle))
+				}
+			}
+			appendReleaseSection("NEWER RELEASES", newReleaseStyle, newer)
+			appendReleaseSection("REVIEWED", mutedStyle, reviewed)
 		}
 	}
 
@@ -863,7 +994,11 @@ func (m Model) View() tea.View {
 		return v
 	}
 	if len(m.artists) == 0 {
-		v.Content = "No artists found. Run 'musup scan <path>' first.\n"
+		if m.scanning {
+			v.Content = m.spinner.View() + " Scanning your music files…\n"
+		} else {
+			v.Content = "No music files found in this directory.\n"
+		}
 		return v
 	}
 
@@ -896,9 +1031,12 @@ func (m Model) View() tea.View {
 
 	var helpText string
 	switch {
-	case m.newReleasesMode:
-		helpText = searchStyle.Render("NEWER RELEASES") +
-			helpStyle.Render(" (esc to return)  "+m.paginator.View())
+	case m.syncCurrentID != 0:
+		progress := fmt.Sprintf("%d/%d", m.syncDone, m.syncTotal)
+		helpText = m.spinner.View() + " " + searchStyle.Render("SYNCING RELEASES") +
+			helpStyle.Render(" "+progress+"  ") +
+			helpKeyStyle.Render("esc") + helpStyle.Render("/") +
+			helpKeyStyle.Render("*") + helpStyle.Render(" cancel  "+m.paginator.View())
 	case m.yearInput != "":
 		helpText = helpStyle.Render("years: ") + searchStyle.Render(m.yearInput) + helpStyle.Render("          "+m.paginator.View())
 	case m.search != "":
@@ -917,14 +1055,19 @@ func (m Model) View() tea.View {
 		helpText = searchStyle.Render(strings.Join(parts, " + ")) +
 			helpStyle.Render(" ("+strings.Join(clearHints, " / ")+" to clear)  "+m.paginator.View())
 	default:
+		var scanPrefix string
+		if m.scanning {
+			scanPrefix = m.spinner.View() + " " + searchStyle.Render("SCANNING") + helpStyle.Render(" | ")
+		}
 		slashLabel := " all"
 		if !m.hideUnfollowed {
 			slashLabel = " followed"
 		}
-		helpText = helpKeyStyle.Render("space") + helpStyle.Render(" follow | ") +
+		helpText = scanPrefix + helpKeyStyle.Render("space") + helpStyle.Render(" un/follow | ") +
 			helpKeyStyle.Render("/") + helpStyle.Render(slashLabel+" | ") +
 			helpKeyStyle.Render("=") + helpStyle.Render(" tracks | ") +
-			helpKeyStyle.Render("*") + helpStyle.Render(" new | ") +
+			helpKeyStyle.Render("*") + helpStyle.Render(" sync | ") +
+			helpKeyStyle.Render(",") + helpStyle.Render(" caught up | ") +
 			helpKeyStyle.Render("?") + helpStyle.Render(" help | ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" quit  "+m.paginator.View())
 	}
@@ -943,25 +1086,6 @@ func (m Model) View() tea.View {
 		var inner string
 		title := modalTitleStyle.Render(m.modal.artistName)
 		switch m.modal.kind {
-		case modalNewReleases:
-			var body string
-			if len(m.modal.tracks) > 0 {
-				var lines []string
-				for i, t := range m.modal.tracks {
-					line := t.line
-					if i == m.modal.cursor {
-						line = selectedStyle.Render(line)
-					}
-					lines = append(lines, line)
-				}
-				body = strings.Join(lines, "\n")
-			} else {
-				body = m.modal.content
-			}
-			footer := helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
-				helpKeyStyle.Render("enter") + helpStyle.Render(" search | ") +
-				helpKeyStyle.Render("esc") + helpStyle.Render(" close")
-			inner = title + "\n\n" + body + "\n" + footer
 		case modalConfirmFetch:
 			content := m.modal.content
 			if m.fetching && m.fetchProgress != nil {
@@ -984,14 +1108,14 @@ func (m Model) View() tea.View {
 
 func (m Model) renderItem(a artist, selected bool, width int) string {
 	var prefix, name string
-	if a.followed {
+	if m.syncCurrentID != 0 && a.id == m.syncCurrentID {
+		prefix = newReleaseStyle.Render(strings.TrimRight(m.spinner.View(), " "))
+	} else if a.followed {
 		prefix = checkStyle.Render("✓")
 	} else {
 		prefix = mutedStyle.Render("·")
 	}
-	if m.newReleasesMode {
-		name = a.name
-	} else if a.followed {
+	if a.followed {
 		name = a.name
 	} else {
 		name = mutedStyle.Render(a.name)
@@ -1001,13 +1125,17 @@ func (m Model) renderItem(a artist, selected bool, width int) string {
 	}
 
 	nameWidth := width - 3
-	hasNewRelease := !m.newReleasesMode && m.newReleases != nil
-	if hasNewRelease {
-		if _, ok := m.newReleases[a.id]; ok {
-			nameWidth--
-		} else {
-			hasNewRelease = false
+	hasNewRelease := false
+	if releases, ok := m.newReleases[a.id]; ok {
+		for _, r := range releases {
+			if a.reviewedAt == "" || r.ReleaseDate > a.reviewedAt {
+				hasNewRelease = true
+				break
+			}
 		}
+	}
+	if hasNewRelease {
+		nameWidth--
 	}
 	line := prefix + " " + truncate(name, nameWidth)
 	if hasNewRelease {
