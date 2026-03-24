@@ -33,6 +33,7 @@ type keyMap struct {
 	Detail         key.Binding
 	Help           key.Binding
 	FilterInactive key.Binding
+	FilterFollowed key.Binding
 	Quit           key.Binding
 }
 
@@ -49,6 +50,7 @@ var keys = keyMap{
 	Detail:         key.NewBinding(key.WithKeys("enter")),
 	Help:           key.NewBinding(key.WithKeys("?")),
 	FilterInactive: key.NewBinding(key.WithKeys(".")),
+	FilterFollowed: key.NewBinding(key.WithKeys("/")),
 	Quit:           key.NewBinding(key.WithKeys("esc", "ctrl+c")),
 }
 
@@ -64,6 +66,7 @@ func buildHelpContent() string {
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
 		{"*", "Check for new releases"},
+		{"/", "Show only followed"},
 		{".", "Show inactive artists"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
@@ -181,6 +184,7 @@ type Model struct {
 	search          string
 	searchGen       int
 	filterInactive  bool
+	hideUnfollowed  bool
 	yearInput       string
 	yearInputGen    int
 	pinnedGen       int
@@ -452,6 +456,16 @@ func (m *Model) applyFilter() {
 		return
 	}
 
+	if m.hideUnfollowed {
+		var filtered []artist
+		for _, a := range source {
+			if a.followed {
+				filtered = append(filtered, a)
+			}
+		}
+		source = filtered
+	}
+
 	if m.filterInactive {
 		var filtered []artist
 		for _, a := range source {
@@ -612,6 +626,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.modal = m.buildDiscographyModal(a)
 			}
 		}
+
+	case key.Matches(msg, keys.FilterFollowed):
+		m.hideUnfollowed = !m.hideUnfollowed
+		m.applyFilter()
+		m.cursor = 0
+		m.paginator.Page = 0
+		m.updatePagination()
 
 	case key.Matches(msg, keys.FilterInactive):
 		if m.filterInactive {
@@ -925,14 +946,23 @@ func (m Model) View() tea.View {
 		helpText = helpStyle.Render("years: ") + searchStyle.Render(m.yearInput) + helpStyle.Render("          "+m.paginator.View())
 	case m.search != "":
 		helpText = helpStyle.Render("search: ") + searchStyle.Render(m.search) + helpStyle.Render("          "+m.paginator.View())
-	case m.filterInactive && m.filterYears > 0:
-		helpText = searchStyle.Render(fmt.Sprintf("INACTIVE + NO RELEASE %dY", m.filterYears)) +
-			helpStyle.Render(" (. / 0 to clear)  "+m.paginator.View())
-	case m.filterInactive:
-		helpText = searchStyle.Render("INACTIVE") + helpStyle.Render(" (. to clear)  "+m.paginator.View())
-	case m.filterYears > 0:
-		helpText = searchStyle.Render(fmt.Sprintf("NO RELEASE %dY", m.filterYears)) +
-			helpStyle.Render(" (0 to clear)  "+m.paginator.View())
+	case m.hideUnfollowed || m.filterInactive || m.filterYears > 0:
+		var parts []string
+		var clearHints []string
+		if m.hideUnfollowed {
+			parts = append(parts, "FOLLOWED")
+			clearHints = append(clearHints, "/")
+		}
+		if m.filterInactive {
+			parts = append(parts, "INACTIVE")
+			clearHints = append(clearHints, ".")
+		}
+		if m.filterYears > 0 {
+			parts = append(parts, fmt.Sprintf("NO RELEASE %dY", m.filterYears))
+			clearHints = append(clearHints, "0")
+		}
+		helpText = searchStyle.Render(strings.Join(parts, " + ")) +
+			helpStyle.Render(" ("+strings.Join(clearHints, " / ")+" to clear)  "+m.paginator.View())
 	default:
 		helpText = helpKeyStyle.Render("↑↓←→") + helpStyle.Render(" navigate | ") +
 			helpKeyStyle.Render("space") + helpStyle.Render(" toggle | ") +

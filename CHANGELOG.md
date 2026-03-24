@@ -8,6 +8,7 @@
 - Pinnable discography modal (`p` key) ([#64](https://github.com/toba/musup/issues/64))
 - Shift+Up/Down to jump to next followed artist ([#69](https://github.com/toba/musup/issues/69))
 - Add `*` shortcut for new releases check in TUI ([#66](https://github.com/toba/musup/issues/66))
+- `/` key toggles un-followed artist filtering in artist list view ([#73](https://github.com/toba/musup/issues/73))
 
 ### 🐛 Fixes
 
