@@ -148,7 +148,7 @@
   }
 
   .install-card h3 {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: monospace;
     font-size: 0.75rem;
     font-weight: 500;
     text-transform: uppercase;
@@ -159,11 +159,25 @@
 
   .install-card code {
     display: block;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: ui-monospace, monospace;
     font-size: 0.85rem;
     color: var(--accent);
     line-height: 1.6;
     white-space: pre;
+  }
+
+  .install-card a {
+    display: block;
+    text-align: right;
+    margin-top: 0.8rem;
+    font-size: 0.8rem;
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: none;
+  }
+
+  .install-card a:hover {
+    color: var(--accent);
   }
 
   .install-source {
@@ -175,7 +189,7 @@
   }
 
   .install-source h3 {
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: ui-monospace, monospace;
     font-size: 0.75rem;
     font-weight: 500;
     text-transform: uppercase;
@@ -186,7 +200,7 @@
 
   .install-source code {
     display: block;
-    font-family: 'IBM Plex Mono', monospace;
+    font-family: ui-monospace, monospace;
     font-size: 0.85rem;
     color: var(--accent);
   }
@@ -243,12 +257,14 @@
     <div class="install-card">
       <h3>macOS</h3>
       <code>brew install toba/tap/musup</code>
+      <a href="https://brew.sh">Install Brew</a>
     </div>
     <div class="install-card">
       <h3>Windows</h3>
       <code>scoop bucket add musup \
   https://github.com/toba/scoop-musup
 scoop install musup</code>
+      <a href="https://scoop.sh">Install Scoop</a>
     </div>
   </div>
 
