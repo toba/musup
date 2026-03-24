@@ -15,7 +15,7 @@ brew install toba/tap/musup
 ### Scoop (Windows)
 
 ```
-scoop bucket add musup https://github.com/toba/scoop-musup
+scoop bucket add toba https://github.com/toba/scoop-bucket
 scoop install musup
 ```
 
