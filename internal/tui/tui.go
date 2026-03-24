@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -30,7 +29,6 @@ type keyMap struct {
 	Toggle         key.Binding
 	NextPage       key.Binding
 	PrevPage       key.Binding
-	Detail         key.Binding
 	Help           key.Binding
 	FilterInactive key.Binding
 	FilterFollowed key.Binding
@@ -47,7 +45,6 @@ var keys = keyMap{
 	Toggle:         key.NewBinding(key.WithKeys("space")),
 	NextPage:       key.NewBinding(key.WithKeys("pgdown")),
 	PrevPage:       key.NewBinding(key.WithKeys("pgup")),
-	Detail:         key.NewBinding(key.WithKeys("enter")),
 	Help:           key.NewBinding(key.WithKeys("?")),
 	FilterInactive: key.NewBinding(key.WithKeys(".")),
 	FilterFollowed: key.NewBinding(key.WithKeys("/")),
@@ -60,8 +57,6 @@ func buildHelpContent() string {
 		{"⇧↑ ⇧↓", "Jump to followed"},
 		{"← →", "Move left/right"},
 		{"space", "Toggle follow"},
-		{"enter", "Show albums/tracks"},
-		{"p", "Pin discography modal"},
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
@@ -95,11 +90,10 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("62")).
 			Padding(1, 2)
-	modalTitleStyle  = lipgloss.NewStyle().Bold(true)
-	pinnedModalStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("214")).
-				Padding(1, 2)
+	modalTitleStyle = lipgloss.NewStyle().Bold(true)
+	paneStyle       = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("62"))
 	albumStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	newReleaseStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 )
@@ -135,12 +129,11 @@ type modalData struct {
 	content    string       // pre-rendered for help/confirm modals
 	tracks     []modalTrack // for discography modal
 	cursor     int
-	pinned     bool // pinned mode: modal stays open while navigating artists
 }
 
 type searchClearMsg int
 type yearInputMsg int
-type pinnedRefreshMsg int
+type discogRefreshMsg int
 
 // FetchInactiveFunc queries MusicBrainz for each artist's inactive status.
 // It should call onProgress for each artist processed and check ctx for cancellation.
@@ -187,7 +180,8 @@ type Model struct {
 	hideUnfollowed  bool
 	yearInput       string
 	yearInputGen    int
-	pinnedGen       int
+	discog          *modalData
+	discogGen       int
 	filterYears     int
 	newReleases     map[int64][]db.FollowedNewerReleasesRow
 	newReleasesMode bool
@@ -203,7 +197,7 @@ func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc) Model {
 	p.PerPage = 1
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, spinner: sp, cols: 3, paginator: p}
+	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, spinner: sp, cols: 2, paginator: p}
 }
 
 // Err returns any error that caused the TUI to exit.
@@ -252,6 +246,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyFilter()
 		m.cursor = 0
 		m.updatePagination()
+		if len(m.artists) > 0 {
+			m.discog = m.buildDiscographyModal(m.artists[0])
+		}
 	case errMsg:
 		m.err = msg.err
 		return m, tea.Quit
@@ -271,12 +268,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.yearInput = ""
 		}
-	case pinnedRefreshMsg:
-		if m.modal != nil && m.modal.pinned && int(msg) == m.pinnedGen && len(m.artists) > 0 {
+	case discogRefreshMsg:
+		if int(msg) == m.discogGen && len(m.artists) > 0 {
 			a := m.artists[m.globalIndex()]
-			newModal := m.buildDiscographyModal(a)
-			newModal.pinned = true
-			m.modal = newModal
+			m.discog = m.buildDiscographyModal(a)
 		}
 	case spinner.TickMsg:
 		if m.fetching {
@@ -306,6 +301,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.cursor = 0
 		m.paginator.Page = 0
 		m.updatePagination()
+		if len(m.artists) > 0 {
+			m.discog = m.buildDiscographyModal(m.artists[0])
+		}
 	case tea.KeyPressMsg:
 		if m.modal != nil {
 			return m.handleModalKey(msg)
@@ -330,7 +328,7 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.modal.cursor < len(m.modal.tracks)-1 {
 				m.modal.cursor++
 			}
-		case key.Matches(msg, keys.Detail):
+		case msg.Key().Code == tea.KeyEnter:
 			if len(m.modal.tracks) > 0 {
 				t := m.modal.tracks[m.modal.cursor]
 				searchWeb(fmt.Sprintf("%q %s", m.modal.artistName, t.album))
@@ -347,7 +345,7 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch {
-		case key.Matches(msg, keys.Detail):
+		case msg.Key().Code == tea.KeyEnter:
 			m.fetching = true
 			m.modal = &modalData{
 				kind:       modalConfirmFetch,
@@ -355,52 +353,6 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				content:    m.spinner.View() + " Starting...",
 			}
 			return m, tea.Batch(m.spinner.Tick, m.startFetch())
-		case key.Matches(msg, keys.Quit):
-			m.modal = nil
-		}
-
-	case modalDiscography:
-		if m.modal.pinned {
-			k := msg.Key()
-			if k.Code == tea.KeyEscape {
-				m.modal = nil
-				return m, nil
-			}
-			if k.Text == "c" && k.Mod.Contains(tea.ModCtrl) {
-				return m, tea.Quit
-			}
-			// Delegate all other keys to main handler.
-			model, cmd := m.handleKey(msg)
-			m = model.(Model) //nolint:errcheck // type is always Model
-			// Debounce modal refresh: update title immediately, rebuild content after a short delay.
-			if m.modal != nil && len(m.artists) > 0 {
-				a := m.artists[m.globalIndex()]
-				m.modal.artistName = a.name
-				m.modal.followed = a.followed
-				m.pinnedGen++
-				gen := m.pinnedGen
-				cmd = tea.Batch(cmd, tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
-					return pinnedRefreshMsg(gen)
-				}))
-			}
-			return m, cmd
-		}
-		switch {
-		case key.Matches(msg, keys.Up):
-			if m.modal.cursor > 0 {
-				m.modal.cursor--
-			}
-		case key.Matches(msg, keys.Down):
-			if m.modal.cursor < len(m.modal.tracks)-1 {
-				m.modal.cursor++
-			}
-		case key.Matches(msg, keys.Detail):
-			if len(m.modal.tracks) > 0 {
-				t := m.modal.tracks[m.modal.cursor]
-				openFile(filepath.Join(m.musicRoot, t.path))
-			}
-		case msg.Key().Text == "p":
-			m.modal.pinned = true
 		case key.Matches(msg, keys.Quit):
 			m.modal = nil
 		}
@@ -513,6 +465,7 @@ func (m *Model) globalIndex() int {
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	rows := m.rowsPerCol()
+	var cmd tea.Cmd
 
 	switch {
 	case key.Matches(msg, keys.Quit):
@@ -522,9 +475,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.cursor = 0
 			m.paginator.Page = 0
 			m.updatePagination()
-			return m, nil
+		} else {
+			return m, tea.Quit
 		}
-		return m, tea.Quit
 
 	case key.Matches(msg, keys.PrevFollowed):
 		jumpToFollowed(&m, -1)
@@ -617,14 +570,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case key.Matches(msg, keys.Detail):
-		if len(m.artists) > 0 {
+	case msg.Key().Code == tea.KeyEnter:
+		if m.newReleasesMode && len(m.artists) > 0 {
 			a := m.artists[m.globalIndex()]
-			if m.newReleasesMode {
-				m.modal = m.buildNewReleasesModal(a)
-			} else {
-				m.modal = m.buildDiscographyModal(a)
-			}
+			m.modal = m.buildNewReleasesModal(a)
 		}
 
 	case key.Matches(msg, keys.FilterFollowed):
@@ -676,10 +625,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(k.Text) == 1 {
 			r := rune(k.Text[0])
 			if r == '*' {
-				rows, qErr := m.db.Q.FollowedNewerReleases(context.Background())
-				if qErr == nil && len(rows) > 0 {
+				nrRows, qErr := m.db.Q.FollowedNewerReleases(context.Background())
+				if qErr == nil && len(nrRows) > 0 {
 					m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
-					for _, row := range rows {
+					for _, row := range nrRows {
 						m.newReleases[row.ArtistID] = append(m.newReleases[row.ArtistID], row)
 					}
 					m.newReleasesMode = true
@@ -688,33 +637,38 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.paginator.Page = 0
 					m.updatePagination()
 				}
-				return m, nil
-			}
-			if r >= '0' && r <= '9' {
+			} else if r >= '0' && r <= '9' {
 				m.yearInput += string(r)
 				m.yearInputGen++
 				gen := m.yearInputGen
-				return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+				cmd = tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
 					return yearInputMsg(gen)
 				})
-			}
-			if m.yearInput != "" {
+			} else if m.yearInput != "" {
 				// Non-digit while accumulating year input — cancel.
 				m.yearInput = ""
-				return m, nil
-			}
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			} else if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
 				m.search += strings.ToLower(string(r))
 				m.searchGen++
 				m.jumpToSearch()
 				gen := m.searchGen
-				return m, tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+				cmd = tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
 					return searchClearMsg(gen)
 				})
 			}
 		}
 	}
-	return m, nil
+
+	// Update discography pane title immediately; schedule full content refresh.
+	if len(m.artists) > 0 {
+		a := m.artists[m.globalIndex()]
+		if m.discog != nil {
+			m.discog.artistName = a.name
+			m.discog.followed = a.followed
+		}
+	}
+	refreshCmd := m.scheduleDiscogRefresh()
+	return m, tea.Batch(cmd, refreshCmd)
 }
 
 func (m *Model) jumpToSearch() {
@@ -900,6 +854,43 @@ func (m Model) rowsPerCol() int {
 	return avail
 }
 
+func (m *Model) scheduleDiscogRefresh() tea.Cmd {
+	m.discogGen++
+	gen := m.discogGen
+	return tea.Tick(50*time.Millisecond, func(time.Time) tea.Msg {
+		return discogRefreshMsg(gen)
+	})
+}
+
+func (m Model) renderPane(width, height int) string {
+	// Border consumes 2 chars width, 2 chars height.
+	innerWidth := width - 2
+	if innerWidth < 10 {
+		return ""
+	}
+
+	var title string
+	var body string
+
+	if m.discog == nil {
+		title = mutedStyle.Render("No artist selected")
+	} else {
+		md := m.discog
+		if md.followed {
+			title = checkStyle.Render("✓") + " " + modalTitleStyle.Render(md.artistName)
+		} else {
+			title = mutedStyle.Render("· " + md.artistName)
+		}
+		body = m.renderDiscographyContent(md, false, width)
+	}
+
+	inner := title + "\n" + body
+	return paneStyle.
+		Width(innerWidth).
+		Height(height).
+		Render(inner)
+}
+
 func (m Model) View() tea.View {
 	var v tea.View
 	v.AltScreen = true
@@ -914,7 +905,9 @@ func (m Model) View() tea.View {
 	}
 
 	rows := m.rowsPerCol()
-	colWidth := max(m.width/m.cols, 20)
+	artistAreaWidth := m.width * 2 / 3
+	paneWidth := m.width - artistAreaWidth
+	colWidth := max(artistAreaWidth/m.cols, 20)
 
 	start, end := m.paginator.GetSliceBounds(len(m.artists))
 	pageArtists := m.artists[start:end]
@@ -935,7 +928,8 @@ func (m Model) View() tea.View {
 		colStrs[col] = lipgloss.JoinVertical(lipgloss.Left, lines...)
 	}
 
-	body := lipgloss.JoinHorizontal(lipgloss.Top, colStrs...)
+	pane := m.renderPane(paneWidth, rows)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, colStrs[0], colStrs[1], pane)
 
 	var helpText string
 	switch {
@@ -966,7 +960,6 @@ func (m Model) View() tea.View {
 	default:
 		helpText = helpKeyStyle.Render("↑↓←→") + helpStyle.Render(" navigate | ") +
 			helpKeyStyle.Render("space") + helpStyle.Render(" toggle | ") +
-			helpKeyStyle.Render("enter") + helpStyle.Render(" detail | ") +
 			helpKeyStyle.Render("pgup/dn") + helpStyle.Render(" page | ") +
 			helpKeyStyle.Render("?") + helpStyle.Render(" help | ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" quit  "+m.paginator.View())
@@ -984,29 +977,8 @@ func (m Model) View() tea.View {
 		}
 
 		var inner string
-		var title string
-		if m.modal.kind == modalDiscography {
-			if m.modal.followed {
-				title = checkStyle.Render("✓") + " " + modalTitleStyle.Render(m.modal.artistName)
-			} else {
-				title = mutedStyle.Render("· " + m.modal.artistName)
-			}
-		} else {
-			title = modalTitleStyle.Render(m.modal.artistName)
-		}
+		title := modalTitleStyle.Render(m.modal.artistName)
 		switch m.modal.kind {
-		case modalDiscography:
-			body := m.renderDiscographyContent(m.modal, !m.modal.pinned, maxW)
-			var footer string
-			if m.modal.pinned {
-				footer = helpKeyStyle.Render("esc") + helpStyle.Render(" close")
-			} else {
-				footer = helpKeyStyle.Render("↑↓") + helpStyle.Render(" select | ") +
-					helpKeyStyle.Render("enter") + helpStyle.Render(" open | ") +
-					helpKeyStyle.Render("p") + helpStyle.Render(" pin | ") +
-					helpKeyStyle.Render("esc") + helpStyle.Render(" close")
-			}
-			inner = title + "\n\n" + body + "\n" + footer
 		case modalNewReleases:
 			var body string
 			if len(m.modal.tracks) > 0 {
@@ -1038,11 +1010,7 @@ func (m Model) View() tea.View {
 			inner = title + "\n\n" + m.modal.content + "\n" + footer
 		}
 
-		style := modalStyle
-		if m.modal.pinned {
-			style = pinnedModalStyle
-		}
-		box := style.MaxWidth(maxW).MaxHeight(maxH).Render(inner)
+		box := modalStyle.MaxWidth(maxW).MaxHeight(maxH).Render(inner)
 		content = placeOverlay(m.width, m.height, box, content)
 	}
 
