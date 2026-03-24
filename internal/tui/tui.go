@@ -701,12 +701,6 @@ func jumpToFollowed(m *Model, dir int) {
 	}
 }
 
-type albumBlock struct {
-	name        string
-	releaseYear string
-	tracks      []modalTrack
-}
-
 func (m Model) buildDiscographyModal(a artist) *modalData {
 	rows, err := m.db.Q.ArtistLocalTracks(context.Background(), a.id)
 	if err != nil {
@@ -722,9 +716,9 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 	for _, r := range rows {
 		var line string
 		if r.TrackNumber > 0 {
-			line = fmt.Sprintf("  %2d. %s", r.TrackNumber, r.Title)
+			line = fmt.Sprintf(" %2d. %s", r.TrackNumber, r.Title)
 		} else {
-			line = "      " + r.Title
+			line = "     " + r.Title
 		}
 		if r.Album != currentAlbum {
 			currentAlbum = r.Album
@@ -761,92 +755,6 @@ func (m Model) buildNewReleasesModal(a artist) *modalData {
 	return &modalData{kind: modalNewReleases, artistName: a.name, followed: a.followed, tracks: tracks, cursor: 0}
 }
 
-func (m Model) renderDiscographyContent(md *modalData, showCursor bool, maxWidth int) string {
-	// Content width inside modal: subtract border (2) + padding (4).
-	colWidth := maxWidth - 6
-	// Group tracks by album.
-	var blocks []albumBlock
-	var current albumBlock
-	for _, t := range md.tracks {
-		if t.album != current.name {
-			if len(current.tracks) > 0 {
-				blocks = append(blocks, current)
-			}
-			current = albumBlock{name: t.album, releaseYear: t.releaseYear}
-		}
-		current.tracks = append(current.tracks, t)
-	}
-	if len(current.tracks) > 0 {
-		blocks = append(blocks, current)
-	}
-
-	// Calculate line counts for balanced split.
-	type renderedBlock struct {
-		lines     []string
-		lineCount int
-	}
-
-	trackIdx := 0
-	var rendered []renderedBlock
-	for _, b := range blocks {
-		var lines []string
-		albumTitle := albumStyle.Render(b.name)
-		if b.releaseYear != "" {
-			albumTitle += " " + mutedStyle.Render(b.releaseYear)
-		}
-		lines = append(lines, albumTitle)
-		for _, t := range b.tracks {
-			line := t.line
-			if showCursor && trackIdx == md.cursor {
-				line = selectedStyle.Render(line)
-			}
-			lines = append(lines, line)
-			trackIdx++
-		}
-		rendered = append(rendered, renderedBlock{lines: lines, lineCount: len(lines) + 1}) // +1 for spacing
-	}
-
-	totalLines := 0
-	for _, r := range rendered {
-		totalLines += r.lineCount
-	}
-
-	var leftLines, rightLines []string
-	leftCount := 0
-	half := totalLines / 2
-	for _, r := range rendered {
-		if leftCount <= half {
-			leftLines = append(leftLines, r.lines...)
-			leftLines = append(leftLines, "") // spacing between albums
-			leftCount += r.lineCount
-		} else {
-			rightLines = append(rightLines, r.lines...)
-			rightLines = append(rightLines, "")
-		}
-	}
-
-	// Truncate lines to fit within modal content area.
-	trackWidth := colWidth
-	if len(rightLines) > 0 {
-		trackWidth = (colWidth - 4) / 2 // 4-char gap between columns
-	}
-	if trackWidth > 0 {
-		for i, l := range leftLines {
-			leftLines[i] = truncate(l, trackWidth)
-		}
-		for i, l := range rightLines {
-			rightLines[i] = truncate(l, trackWidth)
-		}
-	}
-
-	leftCol := strings.Join(leftLines, "\n")
-	if len(rightLines) == 0 {
-		return leftCol
-	}
-	rightCol := strings.Join(rightLines, "\n")
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftCol, "    ", rightCol)
-}
-
 func (m Model) rowsPerCol() int {
 	avail := max(
 		// blank line + help bar + padding
@@ -863,28 +771,33 @@ func (m *Model) scheduleDiscogRefresh() tea.Cmd {
 }
 
 func (m Model) renderPane(width, height int) string {
-	// Border consumes 2 chars width, 2 chars height.
+	// Border consumes 2 chars width.
 	innerWidth := width - 2
 	if innerWidth < 10 {
 		return ""
 	}
 
-	var title string
-	var body string
-
-	if m.discog == nil {
-		title = mutedStyle.Render("No artist selected")
-	} else {
-		md := m.discog
-		if md.followed {
-			title = checkStyle.Render("✓") + " " + modalTitleStyle.Render(md.artistName)
-		} else {
-			title = mutedStyle.Render("· " + md.artistName)
+	var inner string
+	if m.discog != nil && len(m.discog.tracks) > 0 {
+		var lines []string
+		currentAlbum := ""
+		for _, t := range m.discog.tracks {
+			if t.album != currentAlbum {
+				if currentAlbum != "" {
+					lines = append(lines, "")
+				}
+				currentAlbum = t.album
+				header := albumStyle.Render(t.album)
+				if t.releaseYear != "" {
+					header += " " + mutedStyle.Render(t.releaseYear)
+				}
+				lines = append(lines, " "+truncate(header, innerWidth-1))
+			}
+			lines = append(lines, truncate(t.line, innerWidth))
 		}
-		body = m.renderDiscographyContent(md, false, width)
+		inner = strings.Join(lines, "\n")
 	}
 
-	inner := title + "\n" + body
 	return paneStyle.
 		Width(innerWidth).
 		Height(height).
