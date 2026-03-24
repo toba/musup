@@ -14,6 +14,10 @@ import (
 
 const defaultBaseURL = "https://musicbrainz.org/ws/2"
 
+// releaseGroupStatusDefault filters out release-groups containing only
+// promotional, bootleg, or pseudo-release status releases.
+const releaseGroupStatusDefault = "website-default"
+
 // Client is a rate-limited MusicBrainz WS2 JSON client.
 type Client struct {
 	base      string
@@ -58,10 +62,11 @@ func (c *Client) SearchArtists(ctx context.Context, name string, limit, offset i
 // Use typeFilter to restrict results (e.g. "album", "ep", "single") or "" for all.
 func (c *Client) BrowseReleaseGroups(ctx context.Context, artistMBID, typeFilter string, limit, offset int) (*ReleaseGroupBrowseResult, error) {
 	params := url.Values{
-		"artist": {artistMBID},
-		"fmt":    {"json"},
-		"limit":  {strconv.Itoa(limit)},
-		"offset": {strconv.Itoa(offset)},
+		"artist":               {artistMBID},
+		"fmt":                  {"json"},
+		"limit":                {strconv.Itoa(limit)},
+		"offset":               {strconv.Itoa(offset)},
+		"release-group-status": {releaseGroupStatusDefault},
 	}
 	if typeFilter != "" {
 		params.Set("type", typeFilter)

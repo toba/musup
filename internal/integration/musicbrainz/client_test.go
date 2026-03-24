@@ -111,6 +111,9 @@ func TestBrowseReleaseGroups_NoTypeFilter(t *testing.T) {
 		if _, ok := r.URL.Query()["type"]; ok {
 			t.Errorf("unexpected type param in URL: %s", r.URL.RawQuery)
 		}
+		if got := r.URL.Query().Get("release-group-status"); got != "website-default" {
+			t.Errorf("expected release-group-status=website-default, got %s", got)
+		}
 
 		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{
 			Count:         0,
@@ -302,6 +305,9 @@ func TestBrowseReleaseGroups(t *testing.T) {
 		}
 		if got := r.URL.Query().Get("type"); got != "album" {
 			t.Errorf("expected type=album, got %s", got)
+		}
+		if got := r.URL.Query().Get("release-group-status"); got != "website-default" {
+			t.Errorf("expected release-group-status=website-default, got %s", got)
 		}
 
 		json.NewEncoder(w).Encode(musicbrainz.ReleaseGroupBrowseResult{

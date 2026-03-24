@@ -24,6 +24,7 @@
 
 - Debounce pinned modal refresh ([#67](https://github.com/toba/musup/issues/67))
 - Style discography modal title to match artist list ([#70](https://github.com/toba/musup/issues/70))
+- Filter MB browse to official releases only ([#75](https://github.com/toba/musup/issues/75))
 
 ## Week of Mar 15 – Mar 21, 2026
 
