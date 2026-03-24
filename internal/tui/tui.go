@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,10 +59,11 @@ func buildHelpContent() string {
 		{"↑ ↓", "Move up/down"},
 		{"⇧↑ ⇧↓", "Jump to followed"},
 		{"← →", "Move left/right"},
-		{"space", "Toggle follow"},
+		{"space", "un/follow"},
 		{"pgdn/pgup", "Next/previous page"},
 		{"a-z", "Jump to artist"},
 		{"1-9", "Filter by release recency"},
+		{"=", "Toggle tracks"},
 		{"*", "Check for new releases"},
 		{"/", "Show only followed"},
 		{".", "Show inactive artists"},
@@ -96,6 +100,7 @@ var (
 			BorderForeground(lipgloss.Color("62"))
 	albumStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33"))
 	newReleaseStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	datePrefixRe    = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}[:\s]\s*`)
 )
 
 type artist struct {
@@ -182,6 +187,7 @@ type Model struct {
 	yearInputGen    int
 	discog          *modalData
 	discogGen       int
+	showTracks      bool
 	filterYears     int
 	newReleases     map[int64][]db.FollowedNewerReleasesRow
 	newReleasesMode bool
@@ -243,6 +249,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case artistsMsg:
 		m.allArtists = msg.artists
 		m.newReleases = msg.newReleases
+		for _, a := range m.allArtists {
+			if a.followed {
+				m.hideUnfollowed = true
+				break
+			}
+		}
 		m.applyFilter()
 		m.cursor = 0
 		m.updatePagination()
@@ -624,7 +636,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		k := msg.Key()
 		if len(k.Text) == 1 {
 			r := rune(k.Text[0])
-			if r == '*' {
+			if r == '=' {
+				m.showTracks = !m.showTracks
+			} else if r == '*' {
 				nrRows, qErr := m.db.Q.FollowedNewerReleases(context.Background())
 				if qErr == nil && len(nrRows) > 0 {
 					m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
@@ -771,35 +785,71 @@ func (m *Model) scheduleDiscogRefresh() tea.Cmd {
 }
 
 func (m Model) renderPane(width, height int) string {
-	// Border consumes 2 chars width.
-	innerWidth := width - 2
-	if innerWidth < 10 {
+	// Width() sets total width including border. Content area = width - 2 (rounded border).
+	contentWidth := width - 2
+	if contentWidth < 10 {
 		return ""
 	}
 
-	var inner string
-	if m.discog != nil && len(m.discog.tracks) > 0 {
-		var lines []string
-		currentAlbum := ""
-		for _, t := range m.discog.tracks {
-			if t.album != currentAlbum {
-				if currentAlbum != "" {
-					lines = append(lines, "")
-				}
-				currentAlbum = t.album
-				header := albumStyle.Render(t.album)
-				if t.releaseYear != "" {
-					header += " " + mutedStyle.Render(t.releaseYear)
-				}
-				lines = append(lines, " "+truncate(header, innerWidth-1))
-			}
-			lines = append(lines, truncate(t.line, innerWidth))
+	renderAlbumLine := func(year, title string) string {
+		title = datePrefixRe.ReplaceAllString(title, "")
+		if year != "" {
+			maxTitle := contentWidth - len(year) - 3 // 1 leading space + 1 space after year + 1 safety
+			return " " + mutedStyle.Render(year) + " " + albumStyle.Render(truncate(title, maxTitle))
 		}
-		inner = strings.Join(lines, "\n")
+		return " " + albumStyle.Render(truncate(title, contentWidth-1))
 	}
 
+	var lines []string
+	if m.discog != nil && len(m.discog.tracks) > 0 {
+		type albumInfo struct {
+			name string
+			year string
+		}
+		seen := map[string]bool{}
+		var albums []albumInfo
+		tracksByAlbum := map[string][]modalTrack{}
+		for _, t := range m.discog.tracks {
+			if !seen[t.album] {
+				seen[t.album] = true
+				albums = append(albums, albumInfo{t.album, t.releaseYear})
+			}
+			tracksByAlbum[t.album] = append(tracksByAlbum[t.album], t)
+		}
+		slices.SortFunc(albums, func(a, b albumInfo) int {
+			return cmp.Compare(b.year, a.year)
+		})
+		for _, a := range albums {
+			lines = append(lines, renderAlbumLine(a.year, a.name))
+			if m.showTracks {
+				for _, t := range tracksByAlbum[a.name] {
+					lines = append(lines, truncate(t.line, contentWidth))
+				}
+			}
+		}
+	}
+
+	if len(m.artists) > 0 {
+		a := m.artists[m.globalIndex()]
+		if releases, ok := m.newReleases[a.id]; ok && len(releases) > 0 {
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, " "+newReleaseStyle.Render("NEWER RELEASES"))
+			for _, r := range releases {
+				year := ""
+				if len(r.ReleaseDate) >= 4 {
+					year = r.ReleaseDate[:4]
+				}
+				lines = append(lines, renderAlbumLine(year, r.AlbumTitle))
+			}
+		}
+	}
+
+	inner := strings.Join(lines, "\n")
+
 	return paneStyle.
-		Width(innerWidth).
+		Width(width).
 		Height(height).
 		Render(inner)
 }
@@ -818,7 +868,7 @@ func (m Model) View() tea.View {
 	}
 
 	rows := m.rowsPerCol()
-	artistAreaWidth := m.width * 2 / 3
+	artistAreaWidth := m.width*2/3 - 12
 	paneWidth := m.width - artistAreaWidth
 	colWidth := max(artistAreaWidth/m.cols, 20)
 
@@ -847,19 +897,15 @@ func (m Model) View() tea.View {
 	var helpText string
 	switch {
 	case m.newReleasesMode:
-		helpText = searchStyle.Render("NEW RELEASES") +
+		helpText = searchStyle.Render("NEWER RELEASES") +
 			helpStyle.Render(" (esc to return)  "+m.paginator.View())
 	case m.yearInput != "":
 		helpText = helpStyle.Render("years: ") + searchStyle.Render(m.yearInput) + helpStyle.Render("          "+m.paginator.View())
 	case m.search != "":
 		helpText = helpStyle.Render("search: ") + searchStyle.Render(m.search) + helpStyle.Render("          "+m.paginator.View())
-	case m.hideUnfollowed || m.filterInactive || m.filterYears > 0:
+	case m.filterInactive || m.filterYears > 0:
 		var parts []string
 		var clearHints []string
-		if m.hideUnfollowed {
-			parts = append(parts, "FOLLOWED")
-			clearHints = append(clearHints, "/")
-		}
 		if m.filterInactive {
 			parts = append(parts, "INACTIVE")
 			clearHints = append(clearHints, ".")
@@ -871,9 +917,14 @@ func (m Model) View() tea.View {
 		helpText = searchStyle.Render(strings.Join(parts, " + ")) +
 			helpStyle.Render(" ("+strings.Join(clearHints, " / ")+" to clear)  "+m.paginator.View())
 	default:
-		helpText = helpKeyStyle.Render("↑↓←→") + helpStyle.Render(" navigate | ") +
-			helpKeyStyle.Render("space") + helpStyle.Render(" toggle | ") +
-			helpKeyStyle.Render("pgup/dn") + helpStyle.Render(" page | ") +
+		slashLabel := " all"
+		if !m.hideUnfollowed {
+			slashLabel = " followed"
+		}
+		helpText = helpKeyStyle.Render("space") + helpStyle.Render(" follow | ") +
+			helpKeyStyle.Render("/") + helpStyle.Render(slashLabel+" | ") +
+			helpKeyStyle.Render("=") + helpStyle.Render(" tracks | ") +
+			helpKeyStyle.Render("*") + helpStyle.Render(" new | ") +
 			helpKeyStyle.Render("?") + helpStyle.Render(" help | ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" quit  "+m.paginator.View())
 	}
@@ -931,30 +982,22 @@ func (m Model) View() tea.View {
 	return v
 }
 
-var cursorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-
 func (m Model) renderItem(a artist, selected bool, width int) string {
 	var prefix, name string
-	if m.newReleasesMode {
-		if selected {
-			prefix = cursorStyle.Render("▸")
-		} else {
-			prefix = " "
-		}
-		name = a.name
-	} else if selected {
-		prefix = cursorStyle.Render("▸")
-		if a.followed {
-			name = a.name
-		} else {
-			name = mutedStyle.Render(a.name)
-		}
-	} else if a.followed {
+	if a.followed {
 		prefix = checkStyle.Render("✓")
-		name = a.name
 	} else {
 		prefix = mutedStyle.Render("·")
+	}
+	if m.newReleasesMode {
+		name = a.name
+	} else if a.followed {
+		name = a.name
+	} else {
 		name = mutedStyle.Render(a.name)
+	}
+	if selected {
+		name = selectedStyle.Render(name)
 	}
 
 	nameWidth := width - 3
