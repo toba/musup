@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>musup — know what you're missing</title>
+<meta name="description" content="A terminal app that scans your music library and checks MusicBrainz for albums you might be missing.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Anybody:wght@700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0e0e12;
+    --surface: #16161d;
+    --border: #2a2a35;
+    --text: #c8c8d0;
+    --text-muted: #6b6b78;
+    --accent: #5fda8a;
+    --accent-dim: #2a6e42;
+    --warm: #d4a052;
+    --code-bg: #1a1a24;
+    --glow: rgba(95, 218, 138, 0.06);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    font-size: 17px;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, monospace;
+    line-height: 1.7;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* subtle scanline texture */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.03) 2px,
+      rgba(0, 0, 0, 0.03) 4px
+    );
+    pointer-events: none;
+    z-index: 100;
+  }
+
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 4rem 1.5rem 3rem;
+  }
+
+  /* ── header ── */
+
+  header {
+    text-align: center;
+    margin-bottom: 3.5rem;
+  }
+
+  h1 {
+    font-family: 'Anybody', sans-serif;
+    font-weight: 800;
+    font-size: 3.4rem;
+    letter-spacing: -0.03em;
+    color: var(--accent);
+    line-height: 1;
+    margin-bottom: 0.6rem;
+    text-shadow: 0 0 40px var(--glow);
+  }
+
+  .tagline {
+    font-size: 0.95rem;
+    color: var(--text-muted);
+    font-style: italic;
+  }
+
+  /* ── screenshot ── */
+
+  .screenshot {
+    margin: 2.5rem 0 3.5rem;
+    text-align: center;
+  }
+
+  .screenshot img {
+    max-width: 100%;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    box-shadow:
+      0 4px 24px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(95, 218, 138, 0.05);
+  }
+
+  /* ── description ── */
+
+  .description {
+    margin-bottom: 3rem;
+    font-size: 0.95rem;
+    color: var(--text);
+  }
+
+  .description p {
+    margin-bottom: 1rem;
+  }
+
+  .description em {
+    color: var(--warm);
+    font-style: italic;
+  }
+
+  /* ── install ── */
+
+  h2 {
+    font-family: 'Anybody', sans-serif;
+    font-weight: 700;
+    font-size: 1.3rem;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    letter-spacing: -0.02em;
+  }
+
+  .install-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+
+  @media (max-width: 540px) {
+    .install-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 2.6rem; }
+  }
+
+  .install-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.3rem;
+  }
+
+  .install-card h3 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.8rem;
+  }
+
+  .install-card code {
+    display: block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--accent);
+    line-height: 1.6;
+    white-space: pre;
+  }
+
+  .install-source {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.3rem;
+    margin-bottom: 3rem;
+  }
+
+  .install-source h3 {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 0.8rem;
+  }
+
+  .install-source code {
+    display: block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.85rem;
+    color: var(--accent);
+  }
+
+  .install-source .note {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-top: 0.5rem;
+  }
+
+  /* ── footer ── */
+
+  footer {
+    text-align: center;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  footer a {
+    color: var(--text-muted);
+    text-decoration: none;
+    border-bottom: 1px solid var(--border);
+    transition: color 0.2s, border-color 0.2s;
+  }
+
+  footer a:hover {
+    color: var(--accent);
+    border-color: var(--accent-dim);
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>musup</h1>
+    <p class="tagline">know what you're missing</p>
+  </header>
+
+  <div class="screenshot">
+    <img src="../assets/screenshot.png" alt="musup terminal interface showing artist list with discography pane">
+  </div>
+
+  <div class="description">
+    <p>A terminal app that lives in your music folder. Point it at your library and it catalogs every artist, then checks <a href="https://musicbrainz.org/" style="color: var(--warm); text-decoration: none; border-bottom: 1px solid var(--accent-dim);">MusicBrainz</a> for albums you might be missing.</p>
+    <p>Follow the artists you care about. Press <code style="color: var(--warm); background: var(--code-bg); padding: 0.1em 0.4em; border-radius: 3px;">*</code> to sync. New releases show up right there in the terminal — no browser tabs, no subscription, no algorithm deciding what you should hear next.</p>
+  </div>
+
+  <h2>Install</h2>
+
+  <div class="install-grid">
+    <div class="install-card">
+      <h3>macOS</h3>
+      <code>brew install toba/tap/musup</code>
+    </div>
+    <div class="install-card">
+      <h3>Windows</h3>
+      <code>scoop bucket add musup \
+  https://github.com/toba/scoop-musup
+scoop install musup</code>
+    </div>
+  </div>
+
+  <div class="install-source">
+    <h3>From source</h3>
+    <code>go install github.com/toba/musup@latest</code>
+    <p class="note">Requires Go 1.26+</p>
+  </div>
+
+  <footer>
+    <a href="https://github.com/toba/musup">github.com/toba/musup</a> · Apache-2.0
+  </footer>
+
+</div>
+</body>
+</html>
