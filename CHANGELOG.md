@@ -19,6 +19,7 @@
 
 ### 🐛 Fixes
 
+- Artists matching wrong albums; partial name matches (e.g. Bush matches Kate Bush albums) ([#86](https://github.com/toba/musup/issues/86))
 - Fetching Inactive Status modal fails to disappear after fetch completes ([#62](https://github.com/toba/musup/issues/62))
 - Discography modal shows duplicate tracks due to JOIN on albums with same `title_norm` ([#65](https://github.com/toba/musup/issues/65))
 - Pinned discography modal should not show track selection or arrow navigation ([#63](https://github.com/toba/musup/issues/63))
@@ -34,6 +35,7 @@
 - Clear stale album data after `website-default` filter change ([#79](https://github.com/toba/musup/issues/79))
 - Apply `goptimize` findings; extract helpers and constants; add check package tests ([#78](https://github.com/toba/musup/issues/78))
 - Test `FollowedNewerReleases` excludes local albums ([#84](https://github.com/toba/musup/issues/84))
+- Evaluate Zed GPUI as alternative to Bubble Tea TUI ([#85](https://github.com/toba/musup/issues/85))
 
 ## Week of Mar 15 – Mar 21, 2026
 

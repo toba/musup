@@ -301,11 +301,16 @@ scoop install musup</code>
   </div>
 
   <footer>
-    <a href="https://github.com/toba/musup">github.com/toba/musup</a> · Apache-2.0
+    <a href="https://github.com/toba/musup">github.com/toba/musup</a> · <span id="version"></span> · <a href="https://github.com/toba/musup/blob/main/CHANGELOG.md">changelog</a> · Apache-2.0
   </footer>
 
 </div>
 <script>
+fetch('https://api.github.com/repos/toba/musup/releases/latest')
+  .then(r => r.json())
+  .then(d => { if (d.tag_name) document.getElementById('version').textContent = d.tag_name; })
+  .catch(() => {});
+
 function copyCode(btn) {
   const code = btn.parentElement.querySelector('code');
   navigator.clipboard.writeText(code.textContent).then(() => {

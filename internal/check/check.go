@@ -98,10 +98,10 @@ func syncArtist(ctx context.Context, d *db.DB, mb *musicbrainz.Client, artistID 
 		if err != nil {
 			return fmt.Errorf("search artist: %w", err)
 		}
-		if len(result.Artists) == 0 || result.Artists[0].Score < mbMinMatchScore {
+		mbArtist, ok := bestArtistMatch(result.Artists, row.Name)
+		if !ok {
 			return d.Q.MarkArtistNotFound(ctx, artistID)
 		}
-		mbArtist := result.Artists[0]
 		mbid = mbArtist.ID
 
 		_ = d.Q.SetInactive(ctx, int64(db.BoolToInt(mbArtist.LifeSpan.Ended)), artistID)
@@ -172,19 +172,36 @@ func FetchInactiveStatus(ctx context.Context, d *db.DB, mb *musicbrainz.Client, 
 			onProgress(row.Name)
 		}
 
-		sr, err := mb.SearchArtists(ctx, row.Name, 1, 0)
+		sr, err := mb.SearchArtists(ctx, row.Name, mbSearchLimit, 0)
 		if err != nil {
 			continue
 		}
-		if len(sr.Artists) == 0 {
+		matched, ok := bestArtistMatch(sr.Artists, row.Name)
+		if !ok {
 			continue
 		}
-		inactive := sr.Artists[0].LifeSpan.Ended
+		inactive := matched.LifeSpan.Ended
 		result[id] = inactive
 		_ = d.Q.SetInactive(ctx, int64(db.BoolToInt(inactive)), id)
 	}
 
 	return result, nil
+}
+
+// bestArtistMatch finds the best matching artist from search results by
+// requiring an exact name match (case-insensitive, normalized). This prevents
+// partial matches like "Bush" → "Kate Bush".
+func bestArtistMatch(artists []musicbrainz.Artist, name string) (musicbrainz.Artist, bool) {
+	nameNorm := db.Normalize(name)
+	for _, a := range artists {
+		if a.Score < mbMinMatchScore {
+			continue
+		}
+		if db.Normalize(a.Name) == nameNorm {
+			return a, true
+		}
+	}
+	return musicbrainz.Artist{}, false
 }
 
 func hasComposerTag(artist musicbrainz.Artist) bool {

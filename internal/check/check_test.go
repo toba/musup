@@ -3,6 +3,7 @@ package check_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -35,14 +36,17 @@ func ensureArtist(t *testing.T, d *db.DB, name string) int64 {
 }
 
 // fakeMB returns an httptest.Server that responds to artist search and release-group browse.
+// The artists map is keyed by artist name; the query parameter artist:"Name" is parsed to look up the key.
 func fakeMB(t *testing.T, artists map[string]musicbrainz.ArtistSearchResult, releases map[string]musicbrainz.ReleaseGroupBrowseResult) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/artist":
 			query := r.URL.Query().Get("query")
+			// Parse artist:"Name" from query to find the right result.
 			for key, result := range artists {
-				if query != "" && key != "" {
+				expected := fmt.Sprintf(`artist:"%s"`, key)
+				if query == expected {
 					json.NewEncoder(w).Encode(result)
 					return
 				}
@@ -220,6 +224,89 @@ func TestSyncAll_ContextCancellation(t *testing.T) {
 	err := check.SyncAll(ctx, d, mb, 0, nil)
 	if err == nil {
 		t.Fatal("expected context canceled error")
+	}
+}
+
+func TestSyncArtist_PartialNameMatch_Rejected(t *testing.T) {
+	// Searching for "Bush" should NOT match "Kate Bush".
+	d := openTestDB(t)
+	ctx := context.Background()
+	artistID := ensureArtist(t, d, "Bush")
+
+	_ = d.Q.UpsertFile(ctx, db.UpsertFileParams{
+		Path: "bush/track.flac", Size: 100, ModTime: "2024-01-01",
+		Artist: "Bush", ArtistNorm: "bush", ArtistID: artistID,
+		Album: "Sixteen Stone", AlbumNorm: "sixteen stone", ScannedAt: "2024-01-01",
+		IsAlbumArtist: 1,
+	})
+
+	srv := fakeMB(t,
+		map[string]musicbrainz.ArtistSearchResult{
+			"Bush": {Count: 2, Artists: []musicbrainz.Artist{
+				{ID: "mbid-kate", Name: "Kate Bush", Score: 100},
+				{ID: "mbid-bush", Name: "Bush", Score: 95},
+			}},
+		},
+		map[string]musicbrainz.ReleaseGroupBrowseResult{
+			"mbid-kate": {Count: 1, ReleaseGroups: []musicbrainz.ReleaseGroup{
+				{ID: "rg-kate-1", Title: "Hounds of Love", PrimaryType: "Album", FirstReleaseDate: "1985-09-16"},
+			}},
+			"mbid-bush": {Count: 1, ReleaseGroups: []musicbrainz.ReleaseGroup{
+				{ID: "rg-bush-1", Title: "Sixteen Stone", PrimaryType: "Album", FirstReleaseDate: "1994-12-06"},
+			}},
+		},
+	)
+	defer srv.Close()
+
+	mb := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@test.com")
+	if err := check.SyncArtist(ctx, d, mb, artistID); err != nil {
+		t.Fatalf("SyncArtist: %v", err)
+	}
+
+	// Should have matched "Bush", not "Kate Bush".
+	row, err := d.Q.GetArtistByID(ctx, artistID)
+	if err != nil {
+		t.Fatalf("GetArtistByID: %v", err)
+	}
+	if row.Mbid != "mbid-bush" {
+		t.Errorf("expected mbid 'mbid-bush', got %q (matched wrong artist)", row.Mbid)
+	}
+}
+
+func TestSyncArtist_NoExactMatch_MarksNotFound(t *testing.T) {
+	// If no search result has an exact name match, mark as not found.
+	d := openTestDB(t)
+	ctx := context.Background()
+	artistID := ensureArtist(t, d, "Bush")
+
+	_ = d.Q.UpsertFile(ctx, db.UpsertFileParams{
+		Path: "bush/track.flac", Size: 100, ModTime: "2024-01-01",
+		Artist: "Bush", ArtistNorm: "bush", ArtistID: artistID,
+		Album: "Sixteen Stone", AlbumNorm: "sixteen stone", ScannedAt: "2024-01-01",
+		IsAlbumArtist: 1,
+	})
+
+	srv := fakeMB(t,
+		map[string]musicbrainz.ArtistSearchResult{
+			"Bush": {Count: 1, Artists: []musicbrainz.Artist{
+				{ID: "mbid-kate", Name: "Kate Bush", Score: 100},
+			}},
+		},
+		nil,
+	)
+	defer srv.Close()
+
+	mb := musicbrainz.NewWithBase(srv.URL, "test", "0.1", "test@test.com")
+	if err := check.SyncArtist(ctx, d, mb, artistID); err != nil {
+		t.Fatalf("SyncArtist: %v", err)
+	}
+
+	row, err := d.Q.GetArtistByID(ctx, artistID)
+	if err != nil {
+		t.Fatalf("GetArtistByID: %v", err)
+	}
+	if row.NotFound != 1 {
+		t.Errorf("expected not_found=1 (no exact match), got %d", row.NotFound)
 	}
 }
 
