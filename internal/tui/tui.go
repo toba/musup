@@ -17,6 +17,7 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/paginator"
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/toba/musup/internal/db"
@@ -70,6 +71,7 @@ func buildHelpContent() string {
 		{"/", "Show only followed"},
 		{"-", "Vacuum database"},
 		{".", "Show inactive artists"},
+		{":", "Edit search URL"},
 		{"?", "Show this help"},
 		{"esc", "Quit"},
 	}
@@ -130,6 +132,7 @@ const (
 	modalHelp modalKind = iota
 	modalDiscography
 	modalConfirmFetch
+	modalSearchURL
 )
 
 type modalData struct {
@@ -221,6 +224,8 @@ type Model struct {
 	filterYears    int
 	newReleases    map[int64][]db.FollowedNewerReleasesRow
 	searchURL      string
+	searchURLInput textinput.Model
+	searchURLErr   string
 	fetching       bool
 	width          int
 	height         int
@@ -233,7 +238,9 @@ func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc, syncArtist
 	p.PerPage = 1
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, syncArtistFn: syncArtist, scanFn: scanFn, scanning: true, spinner: sp, cols: 2, paginator: p}
+	ti := textinput.New()
+	ti.SetWidth(60)
+	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, syncArtistFn: syncArtist, scanFn: scanFn, scanning: true, spinner: sp, cols: 2, paginator: p, searchURLInput: ti}
 }
 
 // Err returns any error that caused the TUI to exit.
@@ -294,6 +301,13 @@ func (m *Model) syncing() bool {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.modal != nil && m.modal.kind == modalSearchURL {
+		if _, isKey := msg.(tea.KeyPressMsg); !isKey {
+			var cmd tea.Cmd
+			m.searchURLInput, cmd = m.searchURLInput.Update(msg)
+			return m, cmd
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -440,6 +454,31 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.startFetch())
 		case key.Matches(msg, keys.Quit):
 			m.modal = nil
+		}
+
+	case modalSearchURL:
+		switch {
+		case msg.Key().Code == tea.KeyEnter:
+			val := strings.TrimSpace(m.searchURLInput.Value())
+			if !strings.HasPrefix(val, "http://") && !strings.HasPrefix(val, "https://") {
+				m.searchURLErr = "URL must start with http:// or https://"
+			} else if !strings.Contains(val, "%s") {
+				m.searchURLErr = "URL must contain %s"
+			} else {
+				_ = m.db.Q.SetSetting(context.Background(), "search_url", val)
+				m.searchURL = val
+				m.searchURLInput.Blur()
+				m.searchURLErr = ""
+				m.modal = nil
+			}
+		case key.Matches(msg, keys.Quit):
+			m.searchURLInput.Blur()
+			m.searchURLErr = ""
+			m.modal = nil
+		default:
+			var cmd tea.Cmd
+			m.searchURLInput, cmd = m.searchURLInput.Update(msg)
+			return m, cmd
 		}
 	}
 	return m, nil
@@ -783,6 +822,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					_ = m.db.Q.SetReviewedAt(context.Background(), a.reviewedAt, a.id)
 					m.updateAllArtist(a.id, func(aa *artist) { aa.reviewedAt = a.reviewedAt })
 				}
+			} else if r == ':' {
+				m.searchURLInput.SetValue(m.searchURL)
+				m.searchURLInput.CursorEnd()
+				m.searchURLErr = ""
+				cmd = m.searchURLInput.Focus()
+				m.modal = &modalData{kind: modalSearchURL, artistName: "Search URL"}
 			} else if r >= '0' && r <= '9' {
 				m.yearInput += string(r)
 				m.yearInputGen++
@@ -1093,6 +1138,16 @@ func (m Model) View() tea.View {
 			}
 			footer := "\n" + helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
 			inner = title + "\n\n" + content + footer
+		case modalSearchURL:
+			inputView := m.searchURLInput.View()
+			hint := helpStyle.Render("%s must be included to represent the artist name")
+			var errLine string
+			if m.searchURLErr != "" {
+				errLine = "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(m.searchURLErr)
+			}
+			footer := "\n\n" + helpKeyStyle.Render("enter") + helpStyle.Render(" save  ") +
+				helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
+			inner = title + "\n\n" + inputView + "\n" + hint + errLine + footer
 		default:
 			footer := helpStyle.Render("Press any key to close")
 			inner = title + "\n\n" + m.modal.content + "\n" + footer
