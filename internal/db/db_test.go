@@ -746,6 +746,94 @@ func TestNewerReleases_ExcludesLocalAlbums(t *testing.T) {
 	}
 }
 
+func TestFollowedNewerReleases_ExcludesLocalAlbums(t *testing.T) {
+	db := openTestDB(t)
+
+	rhID := ensureArtist(t, db, "Radiohead")
+
+	// Start with only "OK Computer" locally.
+	if err := db.Q.UpsertFile(bg, testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = rhID })); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
+		Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album",
+	})
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
+		Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album",
+	})
+
+	// "A Moon Shaped Pool" is newer than the latest local album and not owned locally.
+	releases, err := db.Q.FollowedNewerReleases(bg)
+	if err != nil {
+		t.Fatalf("FollowedNewerReleases: %v", err)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("expected 1 newer release, got %d", len(releases))
+	}
+	if releases[0].AlbumTitle != "A Moon Shaped Pool" {
+		t.Errorf("expected album 'A Moon Shaped Pool', got %q", releases[0].AlbumTitle)
+	}
+
+	// Now the user saves the album locally.
+	if err := db.Q.UpsertFile(bg, testFileParams("a/2.flac", "Radiohead", "A Moon Shaped Pool", "Burn the Witch", func(p *UpsertFileParams) { p.ArtistID = rhID })); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	releases, err = db.Q.FollowedNewerReleases(bg)
+	if err != nil {
+		t.Fatalf("FollowedNewerReleases after local save: %v", err)
+	}
+	if len(releases) != 0 {
+		t.Fatalf("expected 0 releases after saving locally, got %d", len(releases))
+	}
+}
+
+func TestFollowedNewerReleases_ReviewedAlsoExcluded(t *testing.T) {
+	db := openTestDB(t)
+
+	rhID := ensureArtist(t, db, "Radiohead")
+
+	// Mark artist as reviewed through 2020 so the newer album falls into "reviewed" bucket.
+	if err := db.Q.SetReviewedAt(bg, "2020-01-01T00:00:00Z", rhID); err != nil {
+		t.Fatalf("SetReviewedAt: %v", err)
+	}
+
+	if err := db.Q.UpsertFile(bg, testFileParams("a/1.flac", "Radiohead", "OK Computer", "Airbag", func(p *UpsertFileParams) { p.ArtistID = rhID })); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
+		Title: "OK Computer", Mbid: "aaa", ReleaseDate: "1997-05-21", PrimaryType: "Album",
+	})
+	testUpsertAlbum(t, db, rhID, UpsertAlbumParams{
+		Title: "A Moon Shaped Pool", Mbid: "bbb", ReleaseDate: "2016-05-08", PrimaryType: "Album",
+	})
+
+	// Album is newer than latest local and would appear in "reviewed" bucket
+	// (release_date 2016 <= reviewed_at 2020), but it's still returned by the query.
+	releases, err := db.Q.FollowedNewerReleases(bg)
+	if err != nil {
+		t.Fatalf("FollowedNewerReleases: %v", err)
+	}
+	if len(releases) != 1 {
+		t.Fatalf("expected 1 release (reviewed but not local), got %d", len(releases))
+	}
+
+	// Save the album locally — it should disappear regardless of reviewed_at.
+	if err := db.Q.UpsertFile(bg, testFileParams("a/2.flac", "Radiohead", "A Moon Shaped Pool", "Burn the Witch", func(p *UpsertFileParams) { p.ArtistID = rhID })); err != nil {
+		t.Fatalf("UpsertFile: %v", err)
+	}
+
+	releases, err = db.Q.FollowedNewerReleases(bg)
+	if err != nil {
+		t.Fatalf("FollowedNewerReleases after local save: %v", err)
+	}
+	if len(releases) != 0 {
+		t.Fatalf("expected 0 releases after saving locally, got %d", len(releases))
+	}
+}
+
 func TestAlbumArtists(t *testing.T) {
 	db := openTestDB(t)
 

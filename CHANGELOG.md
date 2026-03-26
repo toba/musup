@@ -14,6 +14,8 @@
 - `,` key marks artist as caught up on releases ([#77](https://github.com/toba/musup/issues/77))
 - Remove subcommands; TUI-only with auto-scan on startup ([#80](https://github.com/toba/musup/issues/80))
 - `enter` opens artist search URL; settings table for configuration ([#76](https://github.com/toba/musup/issues/76))
+- Add search URL edit modal; `:` key opens `textinput` with validation ([#83](https://github.com/toba/musup/issues/83))
+- Create GitHub Pages static site ([#82](https://github.com/toba/musup/issues/82))
 
 ### 🐛 Fixes
 
@@ -31,6 +33,7 @@
 - Filter MB browse to official releases only ([#75](https://github.com/toba/musup/issues/75))
 - Clear stale album data after `website-default` filter change ([#79](https://github.com/toba/musup/issues/79))
 - Apply `goptimize` findings; extract helpers and constants; add check package tests ([#78](https://github.com/toba/musup/issues/78))
+- Test `FollowedNewerReleases` excludes local albums ([#84](https://github.com/toba/musup/issues/84))
 
 ## Week of Mar 15 – Mar 21, 2026
 
