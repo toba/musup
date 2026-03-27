@@ -19,6 +19,7 @@
 
 ### 🐛 Fixes
 
+- Setting reviewed can fail to include newest albums with future release dates ([#87](https://github.com/toba/musup/issues/87))
 - Artists matching wrong albums; partial name matches (e.g. Bush matches Kate Bush albums) ([#86](https://github.com/toba/musup/issues/86))
 - Fetching Inactive Status modal fails to disappear after fetch completes ([#62](https://github.com/toba/musup/issues/62))
 - Discography modal shows duplicate tracks due to JOIN on albums with same `title_norm` ([#65](https://github.com/toba/musup/issues/65))

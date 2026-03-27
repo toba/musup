@@ -593,6 +593,19 @@ func (m *Model) updateAllArtist(id int64, fn func(*artist)) {
 	}
 }
 
+// reviewedDate returns the date to store as reviewed_at. It uses today's date
+// unless the artist has newer releases dated in the future, in which case it
+// returns the latest release date so all known releases are covered.
+func reviewedDate(today string, releases []db.FollowedNewerReleasesRow) string {
+	best := today
+	for _, r := range releases {
+		if r.ReleaseDate > best {
+			best = r.ReleaseDate
+		}
+	}
+	return best
+}
+
 func filterArtists(source []artist, pred func(artist) bool) []artist {
 	var out []artist
 	for _, a := range source {
@@ -817,7 +830,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					if a.reviewedAt != "" {
 						a.reviewedAt = ""
 					} else {
-						a.reviewedAt = time.Now().Format(dateFormat)
+						a.reviewedAt = reviewedDate(time.Now().Format(dateFormat), m.newReleases[a.id])
 					}
 					_ = m.db.Q.SetReviewedAt(context.Background(), a.reviewedAt, a.id)
 					m.updateAllArtist(a.id, func(aa *artist) { aa.reviewedAt = a.reviewedAt })
