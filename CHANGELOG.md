@@ -5,7 +5,7 @@
 ### ✨ Features
 
 - TUI for toggling followed artists; `musup <N>` keeps CLI mode ([#61](https://github.com/toba/musup/issues/61))
-- Pinnable discography modal (`p` key) ([#64](https://github.com/toba/musup/issues/64))
+- ~~Pinnable discography modal (`p` key)~~ ([#64](https://github.com/toba/musup/issues/64))
 - Shift+Up/Down to jump to next followed artist ([#69](https://github.com/toba/musup/issues/69))
 - Add `*` shortcut for new releases check in TUI ([#66](https://github.com/toba/musup/issues/66))
 - `/` key toggles un-followed artist filtering in artist list view ([#73](https://github.com/toba/musup/issues/73))
@@ -15,9 +15,10 @@
 - Remove subcommands; TUI-only with auto-scan on startup ([#80](https://github.com/toba/musup/issues/80))
 - `enter` opens artist search URL; settings table for configuration ([#76](https://github.com/toba/musup/issues/76))
 - Add search URL edit modal; `:` key opens `textinput` with validation ([#83](https://github.com/toba/musup/issues/83))
+- Hidden `^` command to download 7digital zip files; concurrent downloads with progress ([#88](https://github.com/toba/musup/issues/88))
 - Create GitHub Pages static site ([#82](https://github.com/toba/musup/issues/82))
 
-### 🐛 Fixes
+### 🐞 Fixes
 
 - Setting reviewed can fail to include newest albums with future release dates ([#87](https://github.com/toba/musup/issues/87))
 - Artists matching wrong albums; partial name matches (e.g. Bush matches Kate Bush albums) ([#86](https://github.com/toba/musup/issues/86))
@@ -42,19 +43,19 @@
 
 ### ✨ Features
 
-- Simplify to single-argument CLI; `musup [years]` replaces interactive TUI ([#60](https://github.com/toba/musup/issues/60))
+- ~~Simplify to single-argument CLI; `musup [years]` replaces interactive TUI~~ ([#60](https://github.com/toba/musup/issues/60))
 - Merge artists with names differing only by case or punctuation
 - Filter artist list to show only artists with newer albums than local
-- Highlight entire row when navigating artist list
+- ~~Highlight entire row when navigating artist list~~
 - Add number key shortcuts (1-9) to filter artist list by release recency ([#57](https://github.com/toba/musup/issues/57))
-- Add background task spinner in top-right corner
+- ~~Add background task spinner in top-right corner~~
 - Update TUI footer help text; add help modal
 - Auto-sync when following an artist
 - Follow toggle runs background sync instead of modal
 - Add prune command to delete unfollowed artist catalog data
-- Mark artist as reviewed through a particular album
+- ~~Mark artist as reviewed through a particular album~~
 
-### 🐛 Fixes
+### 🐞 Fixes
 
 - Help modal width causes descriptions to wrap
 - Background spinner not visible when first line fills terminal width ([#44](https://github.com/toba/musup/issues/44))
@@ -88,11 +89,11 @@
 
 - Cap album/track fetching for excessive MusicBrainz results
 - Implement MusicBrainz client for release lookups ([#4](https://github.com/toba/musup/issues/4))
-- Add monitor status modal (`s` shortcut) for artists ([#12](https://github.com/toba/musup/issues/12))
-- Bulk sync (`Shift+U`) for `MonitorAlways` artists
+- ~~Add monitor status modal (`s` shortcut) for artists~~ ([#12](https://github.com/toba/musup/issues/12))
+- ~~Bulk sync (`Shift+U`) for `MonitorAlways` artists~~
 - Add WMA file support via minimal ASF parser
 
-### 🐛 Fixes
+### 🐞 Fixes
 
 - Track matching fails for artists with MusicBrainz title variations ([#6](https://github.com/toba/musup/issues/6))
 - Fix track matching; fuzzy matching via normalized titles ([#14](https://github.com/toba/musup/issues/14))

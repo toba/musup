@@ -3,9 +3,12 @@ package tui
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"slices"
@@ -21,6 +24,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/toba/musup/internal/db"
+	"github.com/toba/musup/internal/integration/sevendigital"
 )
 
 type keyMap struct {
@@ -133,6 +137,7 @@ const (
 	modalDiscography
 	modalConfirmFetch
 	modalSearchURL
+	modalDownload7d
 )
 
 type modalData struct {
@@ -189,6 +194,15 @@ type scanDoneMsg struct{ err error }
 type scanRefreshMsg int
 type vacuumDoneMsg struct{ err error }
 
+type dlRefreshMsg int
+
+type dl7dLoginDoneMsg struct {
+	client   *sevendigital.Client
+	releases []sevendigital.Release
+	err      error
+}
+type dl7dDoneMsg struct{ err error }
+
 type Model struct {
 	allArtists     []artist // full list from DB
 	artists        []artist // currently visible (filtered)
@@ -227,6 +241,19 @@ type Model struct {
 	searchURLInput textinput.Model
 	searchURLErr   string
 	fetching       bool
+	dlIDInput      textinput.Model
+	dlUserInput    textinput.Model
+	dlPassInput    textinput.Model
+	dlFocusIdx     int
+	dlErr          string
+	downloading    bool
+	dlCancel       context.CancelFunc
+	dlClient       *sevendigital.Client
+	dlTotal        int
+	dlDone         int
+	dlStatus       string
+	dlBytes        int64
+	dlGen          int
 	width          int
 	height         int
 	err            error
@@ -240,7 +267,15 @@ func New(d *db.DB, musicRoot string, fetchInactive FetchInactiveFunc, syncArtist
 	sp.Spinner = spinner.Dot
 	ti := textinput.New()
 	ti.SetWidth(60)
-	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, syncArtistFn: syncArtist, scanFn: scanFn, scanning: true, spinner: sp, cols: 2, paginator: p, searchURLInput: ti}
+	dlID := textinput.New()
+	dlID.SetWidth(40)
+	dlID.Placeholder = "e.g. 844708572"
+	dlUser := textinput.New()
+	dlUser.SetWidth(40)
+	dlPass := textinput.New()
+	dlPass.SetWidth(40)
+	dlPass.EchoMode = textinput.EchoPassword
+	return Model{db: d, musicRoot: musicRoot, fetchInactive: fetchInactive, syncArtistFn: syncArtist, scanFn: scanFn, scanning: true, spinner: sp, cols: 2, paginator: p, searchURLInput: ti, dlIDInput: dlID, dlUserInput: dlUser, dlPassInput: dlPass}
 }
 
 // Err returns any error that caused the TUI to exit.
@@ -306,6 +341,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.searchURLInput, cmd = m.searchURLInput.Update(msg)
 			return m, cmd
+		}
+	}
+	if m.modal != nil && m.modal.kind == modalDownload7d {
+		if _, isKey := msg.(tea.KeyPressMsg); !isKey {
+			var cmds []tea.Cmd
+			var cmd tea.Cmd
+			m.dlIDInput, cmd = m.dlIDInput.Update(msg)
+			cmds = append(cmds, cmd)
+			m.dlUserInput, cmd = m.dlUserInput.Update(msg)
+			cmds = append(cmds, cmd)
+			m.dlPassInput, cmd = m.dlPassInput.Update(msg)
+			cmds = append(cmds, cmd)
+			return m, tea.Batch(cmds...)
 		}
 	}
 	switch msg := msg.(type) {
@@ -374,8 +422,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadArtists
 	case vacuumDoneMsg:
 		// Vacuum runs silently; nothing to update.
+	case dl7dLoginDoneMsg:
+		if msg.err != nil {
+			m.downloading = false
+			m.dlCancel = nil
+			m.dlStatus = ""
+			m.modal = &modalData{kind: modalHelp, artistName: "Download Error", content: fmt.Sprintf("%v", msg.err)}
+			return m, nil
+		}
+		m.dlClient = msg.client
+		m.dlTotal = len(msg.releases)
+		m.dlDone = 0
+		m.dlBytes = 0
+		m.dlStatus = "downloading"
+		// Create new cancel context for the download phase (login phase context may be done).
+		ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for esc
+		m.dlCancel = cancel
+		return m, tea.Batch(startDownloadAll(ctx, msg.client, msg.releases), m.scheduleDlRefresh())
+	case dl7dDoneMsg:
+		m.downloading = false
+		m.dlCancel = nil
+		m.dlClient = nil
+		if msg.err != nil {
+			m.dlStatus = ""
+			errStr := msg.err.Error()
+			if !strings.Contains(errStr, "context canceled") {
+				m.modal = &modalData{kind: modalHelp, artistName: "Download Error", content: errStr}
+			}
+			return m, nil
+		}
+		m.dlStatus = ""
+	case dlRefreshMsg:
+		if m.downloading && int(msg) == m.dlGen && m.dlClient != nil {
+			m.dlBytes = m.dlClient.BytesDownloaded()
+			m.dlDone = m.dlClient.ReleasesCompleted()
+			return m, m.scheduleDlRefresh()
+		}
 	case spinner.TickMsg:
-		if m.fetching || m.syncCurrentID != 0 || m.scanning {
+		if m.fetching || m.syncCurrentID != 0 || m.scanning || m.downloading {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -454,6 +538,61 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.spinner.Tick, m.startFetch())
 		case key.Matches(msg, keys.Quit):
 			m.modal = nil
+		}
+
+	case modalDownload7d:
+		switch {
+		case msg.Key().Code == tea.KeyEnter:
+			orderID := strings.TrimSpace(m.dlIDInput.Value())
+			email := strings.TrimSpace(m.dlUserInput.Value())
+			pass := m.dlPassInput.Value()
+			if orderID == "" || email == "" || pass == "" {
+				m.dlErr = "All fields are required"
+				return m, nil
+			}
+			// Save credentials for next time.
+			_ = m.db.Q.SetSetting(context.Background(), "7digital_user", email)
+			_ = m.db.Q.SetSetting(context.Background(), "7digital_pass", pass)
+			// Close modal and start background download.
+			m.dlIDInput.Blur()
+			m.dlUserInput.Blur()
+			m.dlPassInput.Blur()
+			m.dlErr = ""
+			m.modal = nil
+			ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for esc
+			m.dlCancel = cancel
+			m.downloading = true
+			m.dlDone = 0
+			m.dlTotal = 0
+			m.dlBytes = 0
+			m.dlStatus = "Logging in..."
+			return m, tea.Batch(m.spinner.Tick, m.startDownload7d(ctx, orderID, email, pass))
+		case msg.Key().Code == tea.KeyTab:
+			inputs := []*textinput.Model{&m.dlIDInput, &m.dlUserInput, &m.dlPassInput}
+			inputs[m.dlFocusIdx].Blur()
+			if msg.Key().Mod&tea.ModShift != 0 {
+				m.dlFocusIdx = (m.dlFocusIdx + 2) % 3
+			} else {
+				m.dlFocusIdx = (m.dlFocusIdx + 1) % 3
+			}
+			return m, inputs[m.dlFocusIdx].Focus()
+		case key.Matches(msg, keys.Quit):
+			m.dlIDInput.Blur()
+			m.dlUserInput.Blur()
+			m.dlPassInput.Blur()
+			m.dlErr = ""
+			m.modal = nil
+		default:
+			var cmd tea.Cmd
+			switch m.dlFocusIdx {
+			case 0:
+				m.dlIDInput, cmd = m.dlIDInput.Update(msg)
+			case 1:
+				m.dlUserInput, cmd = m.dlUserInput.Update(msg)
+			case 2:
+				m.dlPassInput, cmd = m.dlPassInput.Update(msg)
+			}
+			return m, cmd
 		}
 
 	case modalSearchURL:
@@ -563,6 +702,39 @@ func (m *Model) syncNextArtist() tea.Cmd {
 	}
 }
 
+func (m Model) startDownload7d(ctx context.Context, orderID, email, pass string) tea.Cmd {
+	return func() tea.Msg {
+		client, err := sevendigital.Login(ctx, email, pass)
+		if err != nil {
+			return dl7dLoginDoneMsg{err: err}
+		}
+		releases, err := client.FetchReleases(ctx, orderID)
+		if err != nil {
+			return dl7dLoginDoneMsg{err: err}
+		}
+		if len(releases) == 0 {
+			return dl7dLoginDoneMsg{err: errors.New("no releases found on download page")}
+		}
+		return dl7dLoginDoneMsg{client: client, releases: releases}
+	}
+}
+
+func startDownloadAll(ctx context.Context, client *sevendigital.Client, releases []sevendigital.Release) tea.Cmd {
+	home, _ := os.UserHomeDir()
+	destDir := filepath.Join(home, "Downloads")
+	return func() tea.Msg {
+		return dl7dDoneMsg{err: client.DownloadAll(ctx, releases, destDir)}
+	}
+}
+
+func (m *Model) scheduleDlRefresh() tea.Cmd {
+	m.dlGen++
+	gen := m.dlGen
+	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+		return dlRefreshMsg(gen)
+	})
+}
+
 func (m *Model) cancelSync() {
 	if m.syncCancel != nil {
 		m.syncCancel()
@@ -662,6 +834,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch {
 	case key.Matches(msg, keys.Quit):
+		if m.downloading && m.dlCancel != nil {
+			m.dlCancel()
+			m.downloading = false
+			m.dlCancel = nil
+			m.dlClient = nil
+			m.dlStatus = ""
+			return m, nil
+		}
 		if m.syncing() {
 			m.cancelSync()
 			return m, nil
@@ -835,6 +1015,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					_ = m.db.Q.SetReviewedAt(context.Background(), a.reviewedAt, a.id)
 					m.updateAllArtist(a.id, func(aa *artist) { aa.reviewedAt = a.reviewedAt })
 				}
+			} else if r == '^' {
+				user, _ := m.db.Q.GetSetting(context.Background(), "7digital_user")
+				pass, _ := m.db.Q.GetSetting(context.Background(), "7digital_pass")
+				m.dlIDInput.SetValue("")
+				m.dlUserInput.SetValue(user)
+				m.dlPassInput.SetValue(pass)
+				m.dlFocusIdx = 0
+				m.dlErr = ""
+				cmd = m.dlIDInput.Focus()
+				m.modal = &modalData{kind: modalDownload7d, artistName: "7digital Download"}
 			} else if r == ':' {
 				m.searchURLInput.SetValue(m.searchURL)
 				m.searchURLInput.CursorEnd()
@@ -1089,6 +1279,12 @@ func (m Model) View() tea.View {
 
 	var helpText string
 	switch {
+	case m.downloading:
+		progress := fmt.Sprintf("%d/%d", m.dlDone, m.dlTotal)
+		mb := fmt.Sprintf("%.0fMB", float64(m.dlBytes)/(1024*1024))
+		helpText = m.spinner.View() + " " + searchStyle.Render("DOWNLOADING") +
+			helpStyle.Render(" "+progress+" "+mb+"  ") +
+			helpKeyStyle.Render("esc") + helpStyle.Render(" cancel  "+m.paginator.View())
 	case m.syncCurrentID != 0:
 		progress := fmt.Sprintf("%d/%d", m.syncDone, m.syncTotal)
 		helpText = m.spinner.View() + " " + searchStyle.Render("SYNCING RELEASES") +
@@ -1151,6 +1347,22 @@ func (m Model) View() tea.View {
 			}
 			footer := "\n" + helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
 			inner = title + "\n\n" + content + footer
+		case modalDownload7d:
+			idLabel := helpStyle.Render("Download ID")
+			userLabel := helpStyle.Render("Email")
+			passLabel := helpStyle.Render("Password")
+			var errLine string
+			if m.dlErr != "" {
+				errLine = "\n" + lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render(m.dlErr)
+			}
+			footer := "\n\n" + helpKeyStyle.Render("enter") + helpStyle.Render(" download  ") +
+				helpKeyStyle.Render("tab") + helpStyle.Render(" next field  ") +
+				helpKeyStyle.Render("esc") + helpStyle.Render(" cancel")
+			inner = title + "\n\n" +
+				idLabel + "\n" + m.dlIDInput.View() + "\n\n" +
+				userLabel + "\n" + m.dlUserInput.View() + "\n\n" +
+				passLabel + "\n" + m.dlPassInput.View() +
+				errLine + footer
 		case modalSearchURL:
 			inputView := m.searchURLInput.View()
 			hint := helpStyle.Render("%s must be included to represent the artist name")

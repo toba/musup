@@ -4,3 +4,4 @@ musup
 .musup.db*
 internal/state/testdata/*.db
 *.test
+.env
