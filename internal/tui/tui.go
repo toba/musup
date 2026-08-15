@@ -85,9 +85,10 @@ func buildHelpContent() string {
 		if i > 0 {
 			sb.WriteByte('\n')
 		}
-		styled := helpKeyStyle.Render(e[0])
 		pad := max(colWidth-lipgloss.Width(e[0]), 1)
-		sb.WriteString(styled + strings.Repeat(" ", pad) + e[1])
+		sb.WriteString(helpKeyStyle.Render(e[0]))
+		sb.WriteString(strings.Repeat(" ", pad))
+		sb.WriteString(e[1])
 	}
 	return sb.String()
 }
@@ -113,6 +114,17 @@ var (
 )
 
 const dateFormat = "2006-01-02"
+
+// newReleasesDebounce is how long the newer releases refresh waits for the
+// next artist to finish before it runs the query.
+const newReleasesDebounce = 3 * time.Second
+
+// Keys of the rows in the settings table.
+const (
+	settingSearchURL = "search_url"
+	setting7dUser    = "7digital_user"
+	setting7dPass    = "7digital_pass"
+)
 
 type artist struct {
 	id            int64
@@ -190,6 +202,15 @@ type syncArtistDoneMsg struct {
 	err      error
 }
 
+// syncQueueMsg carries the artist IDs that need a MusicBrainz check.
+type syncQueueMsg struct{ ids []int64 }
+
+// newReleasesMsg carries the newer releases of every followed artist.
+type newReleasesMsg map[int64][]db.FollowedNewerReleasesRow
+
+// newReleasesRefreshMsg debounces the newer releases query during a sync.
+type newReleasesRefreshMsg int
+
 type scanDoneMsg struct{ err error }
 type scanRefreshMsg int
 type vacuumDoneMsg struct{ err error }
@@ -223,6 +244,8 @@ type Model struct {
 	syncCurrentID  int64   // artist being synced right now (0 = none)
 	syncTotal      int
 	syncDone       int
+	syncPreparing  bool // the queue build runs in a command
+	nrGen          int  // generation of the debounced newer releases refresh
 	paginator      paginator.Model
 	modal          *modalData
 	spinner        spinner.Model
@@ -320,7 +343,7 @@ func (m Model) loadArtists() tea.Msg {
 			nr[r.ArtistID] = append(nr[r.ArtistID], r)
 		}
 	}
-	searchURL, _ := m.db.Q.GetSetting(context.Background(), "search_url")
+	searchURL, _ := m.db.Q.GetSetting(context.Background(), settingSearchURL)
 	return artistsMsg{artists: artists, newReleases: nr, searchURL: searchURL}
 }
 
@@ -332,30 +355,48 @@ type artistsMsg struct {
 type errMsg struct{ err error }
 
 func (m *Model) syncing() bool {
-	return m.syncCurrentID != 0 || len(m.syncQueue) > 0
+	return m.syncPreparing || m.syncCurrentID != 0 || len(m.syncQueue) > 0
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.modal != nil && m.modal.kind == modalSearchURL {
-		if _, isKey := msg.(tea.KeyPressMsg); !isKey {
-			var cmd tea.Cmd
-			m.searchURLInput, cmd = m.searchURLInput.Update(msg)
-			return m, cmd
-		}
+	// A modal with a text input needs the non-key messages that drive the
+	// cursor blink. Give the input a copy, then always run the main handler.
+	// Returning here instead would drop the message. A dropped message breaks
+	// the command chain that drives it, and the release sync stops for good.
+	var inputCmd tea.Cmd
+	if _, isKey := msg.(tea.KeyPressMsg); !isKey && m.modal != nil {
+		m, inputCmd = m.updateModalInputs(msg)
 	}
-	if m.modal != nil && m.modal.kind == modalDownload7d {
-		if _, isKey := msg.(tea.KeyPressMsg); !isKey {
-			var cmds []tea.Cmd
-			var cmd tea.Cmd
-			m.dlIDInput, cmd = m.dlIDInput.Update(msg)
-			cmds = append(cmds, cmd)
-			m.dlUserInput, cmd = m.dlUserInput.Update(msg)
-			cmds = append(cmds, cmd)
-			m.dlPassInput, cmd = m.dlPassInput.Update(msg)
-			cmds = append(cmds, cmd)
-			return m, tea.Batch(cmds...)
-		}
+
+	model, cmd := m.updateMain(msg)
+	if inputCmd == nil {
+		return model, cmd
 	}
+	return model, tea.Batch(inputCmd, cmd)
+}
+
+// updateModalInputs forwards a message to the text inputs of the open modal.
+func (m Model) updateModalInputs(msg tea.Msg) (Model, tea.Cmd) {
+	switch m.modal.kind {
+	case modalSearchURL:
+		var cmd tea.Cmd
+		m.searchURLInput, cmd = m.searchURLInput.Update(msg)
+		return m, cmd
+	case modalDownload7d:
+		var cmds []tea.Cmd
+		var cmd tea.Cmd
+		m.dlIDInput, cmd = m.dlIDInput.Update(msg)
+		cmds = append(cmds, cmd)
+		m.dlUserInput, cmd = m.dlUserInput.Update(msg)
+		cmds = append(cmds, cmd)
+		m.dlPassInput, cmd = m.dlPassInput.Update(msg)
+		cmds = append(cmds, cmd)
+		return m, tea.Batch(cmds...)
+	}
+	return m, nil
+}
+
+func (m Model) updateMain(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -401,10 +442,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			n, err := strconv.Atoi(m.yearInput)
 			if err == nil {
 				m.filterYears = n
-				m.applyFilter()
-				m.cursor = 0
-				m.paginator.Page = 0
-				m.updatePagination()
+				m.resetFilterView()
 			}
 			m.yearInput = ""
 		}
@@ -445,9 +483,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dlClient = nil
 		if msg.err != nil {
 			m.dlStatus = ""
-			errStr := msg.err.Error()
-			if !strings.Contains(errStr, "context canceled") {
-				m.modal = &modalData{kind: modalHelp, artistName: "Download Error", content: errStr}
+			if !errors.Is(msg.err, context.Canceled) {
+				m.modal = &modalData{kind: modalHelp, artistName: "Download Error", content: msg.err.Error()}
 			}
 			return m, nil
 		}
@@ -459,7 +496,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.scheduleDlRefresh()
 		}
 	case spinner.TickMsg:
-		if m.fetching || m.syncCurrentID != 0 || m.scanning || m.downloading {
+		if m.fetching || m.syncing() || m.scanning || m.downloading {
 			var cmd tea.Cmd
 			m.spinner, cmd = m.spinner.Update(msg)
 			return m, cmd
@@ -468,10 +505,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.fetching = false
 		m.fetchCancel = nil
 		if msg.err != nil {
-			if !strings.Contains(msg.err.Error(), "context canceled") {
-				m.modal = &modalData{kind: modalHelp, artistName: "Error", content: fmt.Sprintf("Failed to fetch inactive status: %v", msg.err)}
-			} else {
+			if errors.Is(msg.err, context.Canceled) {
 				m.modal = nil
+			} else {
+				m.modal = &modalData{kind: modalHelp, artistName: "Error", content: fmt.Sprintf("Failed to fetch inactive status: %v", msg.err)}
 			}
 			return m, nil
 		}
@@ -482,12 +519,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.modal = nil
 		m.filterInactive = true
-		m.applyFilter()
-		m.cursor = 0
-		m.paginator.Page = 0
-		m.updatePagination()
+		m.resetFilterView()
 		if len(m.artists) > 0 {
 			m.discog = m.buildDiscographyModal(m.artists[0])
+		}
+	case syncQueueMsg:
+		// A cancel between the key press and this message clears syncPreparing.
+		if !m.syncPreparing {
+			return m, nil
+		}
+		m.syncPreparing = false
+		if len(msg.ids) == 0 {
+			return m, m.loadNewReleases
+		}
+		ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated *
+		m.syncCtx = ctx
+		m.syncCancel = cancel
+		m.syncQueue = msg.ids
+		m.syncTotal = len(msg.ids)
+		m.syncDone = 0
+		return m, m.syncNextArtist()
+	case newReleasesMsg:
+		if msg != nil {
+			m.newReleases = msg
+		}
+		if len(m.artists) > 0 {
+			m.discog = m.buildDiscographyModal(m.artists[m.globalIndex()])
+		}
+	case newReleasesRefreshMsg:
+		if int(msg) == m.nrGen {
+			return m, m.loadNewReleases
 		}
 	case syncArtistDoneMsg:
 		if !m.syncing() {
@@ -495,17 +556,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.syncDone++
 		m.syncCurrentID = 0
-		m.refreshNewReleases()
 		if len(m.syncQueue) > 0 {
-			return m, m.syncNextArtist()
+			// Coalesce the refresh. The query scans the whole library, so it
+			// must not run once per artist.
+			return m, tea.Batch(m.syncNextArtist(), m.scheduleNewReleasesRefresh())
 		}
 		// All done.
 		m.syncCancel = nil
 		m.syncCtx = nil
-		if len(m.artists) > 0 {
-			m.discog = m.buildDiscographyModal(m.artists[m.globalIndex()])
-		}
-		return m, nil
+		return m, m.loadNewReleases
 	case tea.KeyPressMsg:
 		if m.modal != nil {
 			return m.handleModalKey(msg)
@@ -551,8 +610,8 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			// Save credentials for next time.
-			_ = m.db.Q.SetSetting(context.Background(), "7digital_user", email)
-			_ = m.db.Q.SetSetting(context.Background(), "7digital_pass", pass)
+			_ = m.db.Q.SetSetting(context.Background(), setting7dUser, email)
+			_ = m.db.Q.SetSetting(context.Background(), setting7dPass, pass)
 			// Close modal and start background download.
 			m.dlIDInput.Blur()
 			m.dlUserInput.Blur()
@@ -604,7 +663,7 @@ func (m Model) handleModalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			} else if !strings.Contains(val, "%s") {
 				m.searchURLErr = "URL must contain %s"
 			} else {
-				_ = m.db.Q.SetSetting(context.Background(), "search_url", val)
+				_ = m.db.Q.SetSetting(context.Background(), settingSearchURL, val)
 				m.searchURL = val
 				m.searchURLInput.Blur()
 				m.searchURLErr = ""
@@ -653,14 +712,32 @@ func (m *Model) startFetch() tea.Cmd {
 	}
 }
 
+// startReleaseSync marks the sync as starting and hands the queue build to a
+// command. The build reads one row per artist. Running it here would block the
+// event loop for the whole library.
 func (m *Model) startReleaseSync() tea.Cmd {
-	staleAfter := 7 * 24 * time.Hour
-	var queue []int64
+	m.syncPreparing = true
+
+	ids := make([]int64, 0, len(m.allArtists))
 	for _, a := range m.allArtists {
-		if !a.followed {
-			continue
+		if a.followed {
+			ids = append(ids, a.id)
 		}
-		row, err := m.db.Q.GetArtistByID(context.Background(), a.id)
+	}
+	d := m.db
+	return tea.Batch(m.spinner.Tick, func() tea.Msg {
+		return syncQueueMsg{ids: staleArtists(d, ids)}
+	})
+}
+
+// staleArtists keeps the artists that need a MusicBrainz check. It drops the
+// artists MusicBrainz does not know and the artists checked recently.
+func staleArtists(d *db.DB, ids []int64) []int64 {
+	const staleAfter = 7 * 24 * time.Hour
+
+	var queue []int64
+	for _, id := range ids {
+		row, err := d.Q.GetArtistByID(context.Background(), id)
 		if err != nil || row.NotFound != 0 {
 			continue
 		}
@@ -670,19 +747,9 @@ func (m *Model) startReleaseSync() tea.Cmd {
 				continue
 			}
 		}
-		queue = append(queue, a.id)
+		queue = append(queue, id)
 	}
-	if len(queue) == 0 {
-		m.refreshNewReleases()
-		return nil
-	}
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel stored for user-initiated *
-	m.syncCtx = ctx
-	m.syncCancel = cancel
-	m.syncQueue = queue
-	m.syncTotal = len(queue)
-	m.syncDone = 0
-	return tea.Batch(m.spinner.Tick, m.syncNextArtist())
+	return queue
 }
 
 func (m *Model) syncNextArtist() tea.Cmd {
@@ -743,17 +810,31 @@ func (m *Model) cancelSync() {
 	m.syncCtx = nil
 	m.syncQueue = nil
 	m.syncCurrentID = 0
+	m.syncPreparing = false
 }
 
-func (m *Model) refreshNewReleases() {
-	nrRows, err := m.db.Q.FollowedNewerReleases(context.Background())
+// loadNewReleases reads the newer releases of every followed artist. The query
+// scans the whole library, so it runs as a command and never inside Update.
+func (m Model) loadNewReleases() tea.Msg {
+	rows, err := m.db.Q.FollowedNewerReleases(context.Background())
 	if err != nil {
-		return
+		return newReleasesMsg(nil)
 	}
-	m.newReleases = make(map[int64][]db.FollowedNewerReleasesRow)
-	for _, r := range nrRows {
-		m.newReleases[r.ArtistID] = append(m.newReleases[r.ArtistID], r)
+	nr := make(map[int64][]db.FollowedNewerReleasesRow, len(rows))
+	for _, r := range rows {
+		nr[r.ArtistID] = append(nr[r.ArtistID], r)
 	}
+	return newReleasesMsg(nr)
+}
+
+// scheduleNewReleasesRefresh debounces loadNewReleases. Only the newest
+// generation survives, so a run of fast artist syncs triggers one query.
+func (m *Model) scheduleNewReleasesRefresh() tea.Cmd {
+	m.nrGen++
+	gen := m.nrGen
+	return tea.Tick(newReleasesDebounce, func(time.Time) tea.Msg {
+		return newReleasesRefreshMsg(gen)
+	})
 }
 
 func (m *Model) updateAllArtist(id int64, fn func(*artist)) {
@@ -763,6 +844,15 @@ func (m *Model) updateAllArtist(id int64, fn func(*artist)) {
 			return
 		}
 	}
+}
+
+// releaseYear returns the 4 digit year of an ISO date. It returns an empty
+// string when the date is too short to hold a year.
+func releaseYear(date string) string {
+	if len(date) < 4 {
+		return ""
+	}
+	return date[:4]
 }
 
 // reviewedDate returns the date to store as reviewed_at. It uses today's date
@@ -805,6 +895,15 @@ func (m *Model) applyFilter() {
 	}
 
 	m.artists = source
+}
+
+// resetFilterView reapplies the filters and returns the view to the first
+// item of the first page.
+func (m *Model) resetFilterView() {
+	m.applyFilter()
+	m.cursor = 0
+	m.paginator.Page = 0
+	m.updatePagination()
 }
 
 func (m *Model) updatePagination() {
@@ -935,10 +1034,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, keys.FilterFollowed):
 		m.hideUnfollowed = !m.hideUnfollowed
-		m.applyFilter()
-		m.cursor = 0
-		m.paginator.Page = 0
-		m.updatePagination()
+		m.resetFilterView()
 
 	case msg.Key().Code == tea.KeyEnter:
 		if len(m.artists) > 0 && m.searchURL != "" {
@@ -953,10 +1049,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.filterInactive {
 			// Toggle off.
 			m.filterInactive = false
-			m.applyFilter()
-			m.cursor = 0
-			m.paginator.Page = 0
-			m.updatePagination()
+			m.resetFilterView()
 		} else {
 			// Check if ended data exists.
 			hasInactive := false
@@ -968,10 +1061,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if hasInactive {
 				m.filterInactive = true
-				m.applyFilter()
-				m.cursor = 0
-				m.paginator.Page = 0
-				m.updatePagination()
+				m.resetFilterView()
 			} else {
 				m.modal = &modalData{
 					kind:       modalConfirmFetch,
@@ -1016,8 +1106,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.updateAllArtist(a.id, func(aa *artist) { aa.reviewedAt = a.reviewedAt })
 				}
 			} else if r == '^' {
-				user, _ := m.db.Q.GetSetting(context.Background(), "7digital_user")
-				pass, _ := m.db.Q.GetSetting(context.Background(), "7digital_pass")
+				user, _ := m.db.Q.GetSetting(context.Background(), setting7dUser)
+				pass, _ := m.db.Q.GetSetting(context.Background(), setting7dPass)
 				m.dlIDInput.SetValue("")
 				m.dlUserInput.SetValue(user)
 				m.dlPassInput.SetValue(pass)
@@ -1117,11 +1207,12 @@ func (m Model) buildDiscographyModal(a artist) *modalData {
 		if r.Album != currentAlbum {
 			currentAlbum = r.Album
 		}
-		year := ""
-		if len(r.ReleaseDate) >= 4 {
-			year = r.ReleaseDate[:4]
-		}
-		allTracks = append(allTracks, modalTrack{path: r.Path, album: r.Album, releaseYear: year, line: line})
+		allTracks = append(allTracks, modalTrack{
+			path:        r.Path,
+			album:       r.Album,
+			releaseYear: releaseYear(r.ReleaseDate),
+			line:        line,
+		})
 	}
 
 	return &modalData{
@@ -1213,11 +1304,7 @@ func (m Model) renderPane(width, height int) string {
 				}
 				lines = append(lines, " "+style.Render(heading))
 				for _, r := range releases {
-					year := ""
-					if len(r.ReleaseDate) >= 4 {
-						year = r.ReleaseDate[:4]
-					}
-					lines = append(lines, renderAlbumLine(year, r.AlbumTitle))
+					lines = append(lines, renderAlbumLine(releaseYear(r.ReleaseDate), r.AlbumTitle))
 				}
 			}
 			appendReleaseSection("NEWER RELEASES", newReleaseStyle, newer)
@@ -1285,8 +1372,11 @@ func (m Model) View() tea.View {
 		helpText = m.spinner.View() + " " + searchStyle.Render("DOWNLOADING") +
 			helpStyle.Render(" "+progress+" "+mb+"  ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render(" cancel  "+m.paginator.View())
-	case m.syncCurrentID != 0:
-		progress := fmt.Sprintf("%d/%d", m.syncDone, m.syncTotal)
+	case m.syncing():
+		progress := "…"
+		if !m.syncPreparing {
+			progress = fmt.Sprintf("%d/%d", m.syncDone, m.syncTotal)
+		}
 		helpText = m.spinner.View() + " " + searchStyle.Render("SYNCING RELEASES") +
 			helpStyle.Render(" "+progress+"  ") +
 			helpKeyStyle.Render("esc") + helpStyle.Render("/") +
