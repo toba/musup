@@ -1,9 +1,10 @@
 version: 2
 
-project_name: musup
+project_name: musup-go
 
 builds:
-  - binary: musup
+  # Windows keeps the plain name musup. The Scoop manifest installs musup.exe.
+  - binary: '{{ if eq .Os "windows" }}musup{{ else }}musup-go{{ end }}'
     env:
       - CGO_ENABLED=0
     goos:
@@ -15,9 +16,9 @@ builds:
       - arm64
     ldflags:
       - -s -w
-      - -X github.com/toba/musup/cmd.ver={{.Version}}
-      - -X github.com/toba/musup/cmd.commit={{.ShortCommit}}
-      - -X github.com/toba/musup/cmd.date={{.Date}}
+      - -X github.com/toba/musup-go/cmd.ver={{.Version}}
+      - -X github.com/toba/musup-go/cmd.commit={{.ShortCommit}}
+      - -X github.com/toba/musup-go/cmd.date={{.Date}}
 
 archives:
   - formats:

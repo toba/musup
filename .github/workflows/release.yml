@@ -38,7 +38,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           VERSION="${TAG#v}"
 
-          ASSET="musup_darwin_arm64.tar.gz"
+          ASSET="musup-go_darwin_arm64.tar.gz"
           SHA=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt -O - \
             | grep "$ASSET" | awk '{print $1}')
 
@@ -50,11 +50,11 @@ jobs:
           git clone "https://x-access-token:${GH_TOKEN}@github.com/toba/homebrew-tap.git" tap
           cd tap
 
-          cat > Formula/musup.rb << FORMULA
-          class Musup < Formula
+          cat > Formula/musup-go.rb << FORMULA
+          class MusupGo < Formula
             desc "Check for new album releases from artists in your music library"
-            homepage "https://github.com/toba/musup"
-            url "https://github.com/toba/musup/releases/download/${TAG}/musup_darwin_arm64.tar.gz"
+            homepage "https://github.com/toba/musup-go"
+            url "https://github.com/toba/musup-go/releases/download/${TAG}/musup-go_darwin_arm64.tar.gz"
             version "${VERSION}"
             sha256 "${SHA}"
             license "Apache-2.0"
@@ -63,21 +63,26 @@ jobs:
             depends_on arch: :arm64
 
             def install
-              bin.install "musup"
+              bin.install "musup-go"
             end
 
             test do
-              assert_match "musup", shell_output("#{bin}/musup version")
+              assert_match "musup", shell_output("#{bin}/musup-go --version")
             end
           end
           FORMULA
 
-          sed -i 's/^          //' Formula/musup.rb
+          sed -i 's/^          //' Formula/musup-go.rb
+
+          # The formula moved from musup to musup-go. Drop the old file once.
+          if [ -f Formula/musup.rb ]; then
+            git rm --quiet Formula/musup.rb
+          fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Formula/musup.rb
-          git commit -m "bump to ${VERSION}"
+          git add Formula/musup-go.rb
+          git commit -m "bump musup-go to ${VERSION}"
           git push
 
   update-scoop:
@@ -93,15 +98,15 @@ jobs:
 
           CHECKSUMS=$(gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern checksums.txt -O -)
 
-          SHA_AMD64=$(echo "$CHECKSUMS" | grep "musup_windows_amd64.zip" | awk '{print $1}')
-          SHA_ARM64=$(echo "$CHECKSUMS" | grep "musup_windows_arm64.zip" | awk '{print $1}')
+          SHA_AMD64=$(echo "$CHECKSUMS" | grep "musup-go_windows_amd64.zip" | awk '{print $1}')
+          SHA_ARM64=$(echo "$CHECKSUMS" | grep "musup-go_windows_arm64.zip" | awk '{print $1}')
 
           if [ -z "$SHA_AMD64" ]; then
-            echo "ERROR: Could not extract SHA256 for musup_windows_amd64.zip"
+            echo "ERROR: Could not extract SHA256 for musup-go_windows_amd64.zip"
             exit 1
           fi
           if [ -z "$SHA_ARM64" ]; then
-            echo "ERROR: Could not extract SHA256 for musup_windows_arm64.zip"
+            echo "ERROR: Could not extract SHA256 for musup-go_windows_arm64.zip"
             exit 1
           fi
 
@@ -117,27 +122,27 @@ jobs:
             '{
               version: $version,
               description: $desc,
-              homepage: "https://github.com/toba/musup",
+              homepage: "https://github.com/toba/musup-go",
               license: "Apache-2.0",
               architecture: {
                 "64bit": {
-                  url: ("https://github.com/toba/musup/releases/download/" + $tag + "/musup_windows_amd64.zip"),
+                  url: ("https://github.com/toba/musup-go/releases/download/" + $tag + "/musup-go_windows_amd64.zip"),
                   hash: $sha_amd64
                 },
                 arm64: {
-                  url: ("https://github.com/toba/musup/releases/download/" + $tag + "/musup_windows_arm64.zip"),
+                  url: ("https://github.com/toba/musup-go/releases/download/" + $tag + "/musup-go_windows_arm64.zip"),
                   hash: $sha_arm64
                 }
               },
               bin: ["musup.exe"],
-              checkver: { github: "https://github.com/toba/musup" },
+              checkver: { github: "https://github.com/toba/musup-go" },
               autoupdate: {
                 architecture: {
                   "64bit": {
-                    url: "https://github.com/toba/musup/releases/download/v$version/musup_windows_amd64.zip"
+                    url: "https://github.com/toba/musup-go/releases/download/v$version/musup-go_windows_amd64.zip"
                   },
                   arm64: {
-                    url: "https://github.com/toba/musup/releases/download/v$version/musup_windows_arm64.zip"
+                    url: "https://github.com/toba/musup-go/releases/download/v$version/musup-go_windows_arm64.zip"
                   }
                 }
               }

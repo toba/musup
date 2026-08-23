@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/toba/musup/internal/check"
-	"github.com/toba/musup/internal/db"
-	"github.com/toba/musup/internal/integration/musicbrainz"
-	"github.com/toba/musup/internal/scan"
-	"github.com/toba/musup/internal/tui"
+	"github.com/toba/musup-go/internal/check"
+	"github.com/toba/musup-go/internal/db"
+	"github.com/toba/musup-go/internal/integration/musicbrainz"
+	"github.com/toba/musup-go/internal/scan"
+	"github.com/toba/musup-go/internal/tui"
 )
 
 var (
@@ -45,7 +45,7 @@ func run(dbPath string) error {
 	defer func() { _ = d.Close() }()
 
 	musicRoot := filepath.Dir(dp)
-	mb := musicbrainz.New("musup", ver, "https://github.com/toba/musup")
+	mb := musicbrainz.New("musup", ver, "https://github.com/toba/musup-go")
 
 	fetchInactive := func(ctx context.Context, d *db.DB, onProgress func(string)) (map[int64]bool, error) {
 		return check.FetchInactiveStatus(ctx, d, mb, onProgress)

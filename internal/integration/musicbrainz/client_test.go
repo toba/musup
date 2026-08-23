@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/toba/musup/internal/integration/musicbrainz"
+	"github.com/toba/musup-go/internal/integration/musicbrainz"
 )
 
 func TestSearchArtists(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
-	"github.com/toba/musup/internal/db"
+	"github.com/toba/musup-go/internal/db"
 
 	_ "modernc.org/sqlite"
 )

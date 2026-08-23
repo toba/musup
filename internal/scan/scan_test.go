@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/toba/musup/internal/db"
+	"github.com/toba/musup-go/internal/db"
 )
 
 func TestScan_EmptyDir(t *testing.T) {

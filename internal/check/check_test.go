@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/toba/musup/internal/check"
-	"github.com/toba/musup/internal/db"
-	"github.com/toba/musup/internal/integration/musicbrainz"
+	"github.com/toba/musup-go/internal/check"
+	"github.com/toba/musup-go/internal/db"
+	"github.com/toba/musup-go/internal/integration/musicbrainz"
 )
 
 func openTestDB(t *testing.T) *db.DB {

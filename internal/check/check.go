@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/toba/musup/internal/db"
-	"github.com/toba/musup/internal/integration/musicbrainz"
+	"github.com/toba/musup-go/internal/db"
+	"github.com/toba/musup-go/internal/integration/musicbrainz"
 )
 
 const (

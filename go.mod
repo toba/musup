@@ -1,4 +1,4 @@
-module github.com/toba/musup
+module github.com/toba/musup-go
 
 go 1.26
 

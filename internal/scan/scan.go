@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/dhowden/tag"
-	"github.com/toba/musup/internal/db"
+	"github.com/toba/musup-go/internal/db"
 	"golang.org/x/sync/errgroup"
 )
 

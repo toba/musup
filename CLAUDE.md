@@ -1,6 +1,8 @@
-# musup
+# musup-go
 
 TUI that scans a folder of music files, catalogs artists, and checks MusicBrainz for new releases.
+
+The binary is `musup-go` on macOS and Linux. The binary stays `musup` on Windows. The database file stays `.musup.db`.
 
 ## Rules
 
@@ -23,7 +25,7 @@ cp "/Users/jason/Library/Mobile Documents/com~apple~CloudDocs/Music/.musup.db" /
 ## Build & Test
 
 ```bash
-go build -o musup .
+go build -o musup-go .
 go test ./...
 go vet ./...
 scripts/lint.sh        # golangci-lint with auto-fix, then report remaining issues

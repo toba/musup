@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/toba/musup/internal/db"
+	"github.com/toba/musup-go/internal/db"
 )
 
 func TestReviewedDateCoversNewestRelease(t *testing.T) {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>musup — know what you're missing</title>
+<title>musup-go — know what you're missing</title>
 <meta name="description" content="A terminal app that scans your music library and checks MusicBrainz for albums you might be missing.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -262,7 +262,7 @@
 <div class="page">
 
   <header>
-    <h1>musup</h1>
+    <h1>musup-go</h1>
     <p class="tagline">know what you're missing</p>
   </header>
 
@@ -281,7 +281,7 @@
     <div class="install-card">
       <button class="copy-btn" onclick="copyCode(this)">copy</button>
       <h3>macOS</h3>
-      <code>brew install toba/tap/musup</code>
+      <code>brew install toba/tap/musup-go</code>
       <a href="https://brew.sh">Install Brew</a>
     </div>
     <div class="install-card">
@@ -296,17 +296,17 @@ scoop install musup</code>
   <div class="install-source" style="position: relative;">
     <button class="copy-btn" onclick="copyCode(this)">copy</button>
     <h3>From source</h3>
-    <code>go install github.com/toba/musup@latest</code>
+    <code>go install github.com/toba/musup-go@latest</code>
     <p class="note">Requires Go 1.26+</p>
   </div>
 
   <footer>
-    <a href="https://github.com/toba/musup">github.com/toba/musup</a> · <span id="version"></span> · <a href="https://github.com/toba/musup/blob/main/CHANGELOG.md">changelog</a> · Apache-2.0
+    <a href="https://github.com/toba/musup-go">github.com/toba/musup-go</a> · <span id="version"></span> · <a href="https://github.com/toba/musup-go/blob/main/CHANGELOG.md">changelog</a> · Apache-2.0
   </footer>
 
 </div>
 <script>
-fetch('https://api.github.com/repos/toba/musup/releases/latest')
+fetch('https://api.github.com/repos/toba/musup-go/releases/latest')
   .then(r => r.json())
   .then(d => { if (d.tag_name) document.getElementById('version').textContent = d.tag_name; })
   .catch(() => {});

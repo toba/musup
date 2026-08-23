@@ -1,6 +1,7 @@
 dist/
 .claude/settings.local.json
 musup
+musup-go
 .musup.db*
 internal/state/testdata/*.db
 *.test

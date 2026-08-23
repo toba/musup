@@ -1,4 +1,4 @@
-# musup
+# musup-go
 
 A terminal app that lives in your music folder. It scans audio file metadata, catalogs your artists, and checks [MusicBrainz](https://musicbrainz.org/) for albums you might be missing. The MusicBrainz part is rate-limited to one request per second, so syncing a large library is a *meditative* experience. Bring a book.
 
@@ -9,8 +9,10 @@ Built on [dhowden/tag](https://github.com/dhowden/tag) for metadata parsing and 
 ### Homebrew (macOS)
 
 ```
-brew install toba/tap/musup
+brew install toba/tap/musup-go
 ```
+
+The command is `musup-go` on macOS and Linux.
 
 ### Scoop (Windows)
 
@@ -19,10 +21,12 @@ scoop bucket add toba https://github.com/toba/scoop-bucket
 scoop install musup
 ```
 
+The command is `musup` on Windows.
+
 ### From source
 
 ```
-go install github.com/toba/musup@latest
+go install github.com/toba/musup-go@latest
 ```
 
 Requires Go 1.26+.
@@ -31,7 +35,7 @@ Requires Go 1.26+.
 
 ```
 cd ~/Music
-musup
+musup-go
 ```
 
 That's it. On launch, musup scans the current directory for music files and populates the TUI in real-time as artists are discovered. Subsequent launches re-scan automatically — only files whose size or mtime changed get re-read, so it's fast after the first run.
